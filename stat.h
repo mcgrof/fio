@@ -272,15 +272,25 @@ struct thread_stat {
 		uint64_t pad4;
 	};
 
-	union {
-		uint64_t *ss_bw_data;
-		/*
-		 * For FIO_NET_CMD_TS, the pointed to data will temporarily
-		 * be stored at this offset from the start of the payload.
-		 */
-		uint64_t ss_bw_data_offset;
-		uint64_t pad5;
-	};
+       union {
+               uint64_t *ss_bw_data;
+               /*
+                * For FIO_NET_CMD_TS, the pointed to data will temporarily
+                * be stored at this offset from the start of the payload.
+                */
+               uint64_t ss_bw_data_offset;
+               uint64_t pad5;
+       };
+
+       union {
+               uint64_t *ss_lat_data;
+               /*
+                * For FIO_NET_CMD_TS, the pointed to data will temporarily
+                * be stored at this offset from the start of the payload.
+                */
+               uint64_t ss_lat_data_offset;
+               uint64_t pad5b;
+       };
 
 	union {
 		struct clat_prio_stat *clat_prio[DDIR_RWDIR_CNT];
