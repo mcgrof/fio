@@ -307,7 +307,7 @@ bool calc_lat(struct io_stat *is, unsigned long long *min,
 	return true;
 }
 
-void show_mixed_group_stats(struct group_run_stats *rs, struct buf_output *out) 
+void show_mixed_group_stats(struct group_run_stats *rs, struct buf_output *out)
 {
 	char *io, *agg, *min, *max;
 	char *ioalt, *aggalt, *minalt, *maxalt;
