@@ -25,6 +25,7 @@ struct steadystate_data {
 	unsigned int tail;
 	uint64_t *iops_data;
 	uint64_t *bw_data;
+	uint64_t *lat_data;
 
 	double slope;
 	double deviation;
@@ -39,6 +40,8 @@ struct steadystate_data {
 	struct timespec prev_time;
 	uint64_t prev_iops;
 	uint64_t prev_bytes;
+	double prev_lat_sum;
+	uint64_t prev_lat_samples;
 };
 
 enum {
@@ -50,6 +53,7 @@ enum {
 	__FIO_SS_DATA,
 	__FIO_SS_PCT,
 	__FIO_SS_BUFFER_FULL,
+	__FIO_SS_LAT,
 };
 
 enum {
@@ -61,9 +65,11 @@ enum {
 	FIO_SS_DATA		= 1 << __FIO_SS_DATA,
 	FIO_SS_PCT		= 1 << __FIO_SS_PCT,
 	FIO_SS_BUFFER_FULL	= 1 << __FIO_SS_BUFFER_FULL,
+	FIO_SS_LAT		= 1 << __FIO_SS_LAT,
 
 	FIO_SS_IOPS_SLOPE	= FIO_SS_IOPS | FIO_SS_SLOPE,
 	FIO_SS_BW_SLOPE		= FIO_SS_BW | FIO_SS_SLOPE,
+	FIO_SS_LAT_SLOPE	= FIO_SS_LAT | FIO_SS_SLOPE,
 };
 
 #endif
