@@ -3847,6 +3847,21 @@ When using this feature, most jobs should include the \fBtime_based\fR
 and \fBruntime\fR options or the \fBloops\fR option so that fio does not
 stop running after it has covered the full size of the specified file(s)
 or device(s).
+.P
+\fBMulti-Metric Mode:\fR Multiple metrics can be monitored simultaneously 
+by combining them with the '+' separator (e.g., \fBiops+bw:1%\fR or 
+\fBiops+bw+lat:1000us\fR). In multi-metric mode, ALL specified metrics 
+must reach steady state before the job terminates. Examples:
+.RS
+.RS
+.P
+\fBsteadystate=iops+bw:1%\fR         # Both IOPS and bandwidth
+.br
+\fBsteadystate=iops+bw+lat:1000us\fR # All three metrics
+.br
+\fBsteadystate=iops_slope+bw_slope:0.5%\fR # Slope-based
+.RE
+.RE
 .RS
 .RS
 .TP

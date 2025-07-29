@@ -1434,7 +1434,49 @@ static int str_steadystate_cb(void *data, const char *str)
 	if (colon)
 		*colon = '\0';
 
-	if (!is_valid_steadystate(td->o.ss_state, opt_name)) {
+	/* Check for multi-metric syntax (e.g., "iops+bw") */
+	char *plus = strchr(opt_name, '+');
+	if (plus) {
+		/* Parse all metrics in the multi-metric string */
+		char *metric = opt_name;
+		char *opt_copy = strdup(opt_name);
+		if (!opt_copy) {
+			log_err("fio: memory allocation failed\n");
+			free(opt_name);
+			return 1;
+		}
+
+		td->ss.active_metrics = 0;
+		td->o.ss_state = 0;
+
+		metric = strtok(opt_copy, "+");
+		while (metric) {
+			if (strstr(metric, "iops")) {
+				td->ss.active_metrics |= FIO_SS_ACTIVE_IOPS;
+				td->o.ss_state |= FIO_SS_IOPS;
+				if (strstr(metric, "_slope"))
+					td->o.ss_state |= FIO_SS_SLOPE;
+			} else if (strstr(metric, "bw")) {
+				td->ss.active_metrics |= FIO_SS_ACTIVE_BW;
+				td->o.ss_state |= FIO_SS_BW;
+				if (strstr(metric, "_slope"))
+					td->o.ss_state |= FIO_SS_SLOPE;
+			} else if (strstr(metric, "lat")) {
+				td->ss.active_metrics |= FIO_SS_ACTIVE_LAT;
+				td->o.ss_state |= FIO_SS_LAT;
+				if (strstr(metric, "_slope"))
+					td->o.ss_state |= FIO_SS_SLOPE;
+			} else {
+				log_err("fio: unknown metric '%s' in multi-metric steady state\n", metric);
+				free(opt_copy);
+				free(opt_name);
+				return 1;
+			}
+
+			metric = strtok(NULL, "+");
+		}
+		free(opt_copy);
+	} else if (!is_valid_steadystate(td->o.ss_state, opt_name)) {
 		/* should be impossible to get here */
 		log_err("fio: unknown steady state criterion\n");
 		free(opt_name);
@@ -1442,6 +1484,7 @@ static int str_steadystate_cb(void *data, const char *str)
 	}
 
 	is_both = (strstr(opt_name, "_both") != NULL);
+	bool is_multi = plus != NULL;
 	free(opt_name);
 
 	nr = get_opt_postfix(str);
@@ -1457,7 +1500,43 @@ static int str_steadystate_cb(void *data, const char *str)
 		td->o.ss_state |= FIO_SS_PCT;
 	}
 
-	if (is_both) {
+	if (is_multi) {
+		/* For multi-metric mode, we need one threshold for each metric */
+		int metric_count = 0;
+		if (td->ss.active_metrics & FIO_SS_ACTIVE_IOPS)
+			metric_count++;
+		if (td->ss.active_metrics & FIO_SS_ACTIVE_BW)
+			metric_count++;
+		if (td->ss.active_metrics & FIO_SS_ACTIVE_LAT)
+			metric_count++;
+
+		/* For now, just use a single threshold for all metrics */
+		/* TODO: Support comma-separated thresholds for each metric */
+		double val;
+		char *thresh_str = nr;
+
+		if (is_pct) {
+			char *p = strchr(thresh_str, '%');
+			if (p) *p = '\0';
+		}
+		strip_blank_end(thresh_str);
+
+		/* For multi-metric, we can't determine is_lat/is_iops from a single state */
+		/* Use default parsing */
+		if (parse_steadystate_threshold(thresh_str, td, is_pct, false, false, &val)) {
+			free(nr);
+			return 1;
+		}
+
+		dprint(FD_PARSE, "set multi-metric steady state threshold to %f\n", val);
+		free(nr);
+
+		if (parse_dryrun())
+			return 0;
+
+		td->o.ss_limit.u.f = val;
+		td->ss.check_both = false;
+	} else if (is_both) {
 		/* For "both" modes, we expect two thresholds separated by comma */
 		char *dev_thresh, *slope_thresh;
 		char *nr_copy = strdup(nr);

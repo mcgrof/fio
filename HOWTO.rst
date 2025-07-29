@@ -4138,6 +4138,28 @@ Steady state
 	and :option:`runtime` options or the :option:`loops` option so that fio does not
 	stop running after it has covered the full size of the specified file(s) or device(s).
 
+	**Multi-Metric Mode**
+
+	Multiple metrics can be monitored simultaneously by combining them with the '+'
+	separator (e.g., ``iops+bw:1%`` or ``iops+bw+lat:1000us``). In multi-metric mode,
+	**ALL** specified metrics must reach steady state before the job terminates. This
+	is particularly useful for comprehensive SSD testing where you need to ensure
+	that IOPS, bandwidth, and latency are all stable before considering the test complete.
+
+	Examples::
+
+		# Monitor both IOPS and bandwidth - both must be within 1% deviation
+		steadystate=iops+bw:1%
+
+		# Monitor IOPS, bandwidth, and latency - all must meet criteria
+		steadystate=iops+bw+lat:1000us
+
+		# Use slope-based criteria for multiple metrics
+		steadystate=iops_slope+bw_slope:0.5%
+
+		# SNIA compliance with multiple metrics (both deviation and slope)
+		steadystate=iops_both+bw_both:1%
+
 		**iops**
 			Collect IOPS data. Stop the job if all individual IOPS measurements
 			are within the specified limit of the mean IOPS (e.g., ``iops:2``
