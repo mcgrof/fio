@@ -9,6 +9,7 @@ extern void steadystate_setup(void);
 extern int td_steadystate_init(struct thread_data *);
 extern uint64_t steadystate_bw_mean(struct thread_stat *);
 extern uint64_t steadystate_iops_mean(struct thread_stat *);
+extern uint64_t steadystate_lat_mean(struct thread_stat *);
 
 extern bool steadystate_enabled;
 extern unsigned int ss_check_interval;
