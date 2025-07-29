@@ -276,8 +276,12 @@ int steadystate_check(void)
 		for (ddir = 0; ddir < DDIR_RWDIR_CNT; ddir++) {
 			td_iops += td->io_blocks[ddir];
 			td_bytes += td->io_bytes[ddir];
-			td_lat_sum += (uint64_t)(td->ts.clat_stat[ddir].mean.u.f *
-					       td->ts.clat_stat[ddir].samples);
+			/* Use double for intermediate calculation to avoid overflow */
+			if (td->ts.clat_stat[ddir].samples) {
+				double lat_contribution = td->ts.clat_stat[ddir].mean.u.f *
+							 (double)td->ts.clat_stat[ddir].samples;
+				td_lat_sum += (uint64_t)lat_contribution;
+			}
 			td_lat_samples += td->ts.clat_stat[ddir].samples;
 		}
 
@@ -320,8 +324,11 @@ int steadystate_check(void)
 					ss->head, ss->tail);
 
 		group_lat = 0;
-		if (group_lat_samples)
-			group_lat = (uint64_t)(group_lat_sum / group_lat_samples);
+		if (group_lat_samples && group_lat_sum) {
+			/* Avoid precision loss by keeping calculation in double until final conversion */
+			double mean_lat = (double)group_lat_sum / (double)group_lat_samples;
+			group_lat = (uint64_t)mean_lat;
+		}
 
 		if (ss->check_both) {
 			/* SNIA compliance: check both deviation and slope */
