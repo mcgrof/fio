@@ -31,6 +31,11 @@ struct steadystate_data {
 	double deviation;
 	double criterion;
 
+	/* Separate criteria for both mode */
+	double deviation_criterion;
+	double slope_criterion;
+	bool check_both;	/* require both deviation and slope criteria */
+
 	uint64_t sum_y;
 	uint64_t sum_x;
 	uint64_t sum_x_sq;
