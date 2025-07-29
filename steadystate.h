@@ -24,6 +24,19 @@ enum ss_metric_type {
 	SS_METRIC_NR	/* Number of metric types */
 };
 
+/*
+ * Per-metric statistics tracking
+ */
+struct ss_metric_tracker {
+	uint64_t sum_y;		/* sum of y values (metric values) */
+	uint64_t sum_xy;	/* sum of x*y values for slope calculation */
+	uint64_t oldest_y;	/* oldest value in circular buffer */
+	double slope;		/* calculated slope */
+	double deviation;	/* calculated deviation */
+	double criterion;	/* calculated criterion value */
+	bool attained;		/* has this metric reached steady state? */
+};
+
 struct steadystate_data {
 	double limit;
 	unsigned long long dur;
