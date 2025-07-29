@@ -7,16 +7,35 @@ bool steadystate_enabled = false;
 unsigned int ss_check_interval = 1000;
 
 /*
+ * Helper function to determine active metric type from state flags
+ */
+static enum ss_metric_type get_active_metric_type(struct steadystate_data *ss)
+{
+	if (ss->state & FIO_SS_IOPS)
+		return SS_METRIC_IOPS;
+	else if (ss->state & FIO_SS_BW)
+		return SS_METRIC_BW;
+	else
+		return SS_METRIC_LAT;
+}
+
+/*
  * Helper function to get metric value based on state flags
  */
 static uint64_t get_metric_value(struct steadystate_data *ss, int index)
 {
-	if (ss->state & FIO_SS_IOPS)
+	enum ss_metric_type type = get_active_metric_type(ss);
+
+	switch (type) {
+	case SS_METRIC_IOPS:
 		return ss->iops_data[index];
-	else if (ss->state & FIO_SS_BW)
+	case SS_METRIC_BW:
 		return ss->bw_data[index];
-	else
+	case SS_METRIC_LAT:
 		return ss->lat_data[index];
+	default:
+		return 0;
+	}
 }
 
 /*
@@ -24,12 +43,18 @@ static uint64_t get_metric_value(struct steadystate_data *ss, int index)
  */
 static uint64_t get_current_metric(struct steadystate_data *ss, uint64_t iops, uint64_t bw, uint64_t lat)
 {
-	if (ss->state & FIO_SS_IOPS)
+	enum ss_metric_type type = get_active_metric_type(ss);
+
+	switch (type) {
+	case SS_METRIC_IOPS:
 		return iops;
-	else if (ss->state & FIO_SS_BW)
+	case SS_METRIC_BW:
 		return bw;
-	else
+	case SS_METRIC_LAT:
 		return lat;
+	default:
+		return 0;
+	}
 }
 
 /*
