@@ -73,6 +73,15 @@ static inline int ss_buffer_next(int index, int intervals)
 	return (index + 1) % intervals;
 }
 
+/*
+ * Helper function to get the active metric tracker
+ */
+static struct ss_metric_tracker *get_active_tracker(struct steadystate_data *ss)
+{
+	enum ss_metric_type type = get_active_metric_type(ss);
+	return &ss->trackers[type];
+}
+
 void steadystate_free(struct thread_data *td)
 {
 	free(td->ss.iops_data);
@@ -144,6 +153,7 @@ static bool steadystate_slope(uint64_t iops, uint64_t bw, uint64_t lat,
 	ss->lat_data[ss->tail] = lat;
 
 	new_val = get_current_metric(ss, iops, bw, lat);
+	struct ss_metric_tracker *tracker = get_active_tracker(ss);
 
 	if (ss->state & FIO_SS_BUFFER_FULL || ss->tail - ss->head == intervals - 1) {
 		if (!(ss->state & FIO_SS_BUFFER_FULL)) {
@@ -153,14 +163,21 @@ static bool steadystate_slope(uint64_t iops, uint64_t bw, uint64_t lat,
 				j = ss_buffer_index(ss, i, intervals);
 				ss->sum_xy += i * get_metric_value(ss, j);
 			}
+			/* Update tracker too */
+			tracker->sum_y = ss->sum_y;
+			tracker->sum_xy = ss->sum_xy;
 			ss->state |= FIO_SS_BUFFER_FULL;
 		} else {		/* easy to update the sums */
 			ss->sum_y -= ss->oldest_y;
 			ss->sum_y += new_val;
 			ss->sum_xy = ss->sum_xy - ss->sum_y + intervals * new_val;
+			/* Update tracker too */
+			tracker->sum_y = ss->sum_y;
+			tracker->sum_xy = ss->sum_xy;
 		}
 
 		ss->oldest_y = get_metric_value(ss, ss->head);
+		tracker->oldest_y = ss->oldest_y;
 
 		/*
 		 * calculate slope as (sum_xy - sum_x * sum_y / n) / (sum_(x^2)
@@ -174,6 +191,10 @@ static bool steadystate_slope(uint64_t iops, uint64_t bw, uint64_t lat,
 			ss->criterion = 100.0 * ss->slope / (ss->sum_y / intervals);
 		else
 			ss->criterion = ss->slope;
+
+		/* Update tracker too */
+		tracker->slope = ss->slope;
+		tracker->criterion = ss->criterion;
 
 		dprint(FD_STEADYSTATE, "sum_y: %llu, sum_xy: %llu, slope: %f, "
 					"criterion: %f, limit: %f\n",
@@ -207,19 +228,24 @@ static bool steadystate_deviation(uint64_t iops, uint64_t bw, uint64_t lat,
 	ss->iops_data[ss->tail] = iops;
 	ss->lat_data[ss->tail] = lat;
 
+	struct ss_metric_tracker *tracker = get_active_tracker(ss);
+
 	if (ss->state & FIO_SS_BUFFER_FULL || ss->tail - ss->head == intervals  - 1) {
 		if (!(ss->state & FIO_SS_BUFFER_FULL)) {
 			/* first time through */
 			for (i = 0, ss->sum_y = 0; i < intervals; i++) {
 				ss->sum_y += get_metric_value(ss, i);
 			}
+			tracker->sum_y = ss->sum_y;
 			ss->state |= FIO_SS_BUFFER_FULL;
 		} else {		/* easy to update the sum */
 			ss->sum_y -= ss->oldest_y;
 			ss->sum_y += get_metric_value(ss, ss->tail);
+			tracker->sum_y = ss->sum_y;
 		}
 
 		ss->oldest_y = get_metric_value(ss, ss->head);
+		tracker->oldest_y = ss->oldest_y;
 
 		mean = (double) ss->sum_y / intervals;
 		ss->deviation = 0.0;
@@ -233,6 +259,10 @@ static bool steadystate_deviation(uint64_t iops, uint64_t bw, uint64_t lat,
 			ss->criterion = 100.0 * ss->deviation / mean;
 		else
 			ss->criterion = ss->deviation;
+
+		/* Update tracker too */
+		tracker->deviation = ss->deviation;
+		tracker->criterion = ss->criterion;
 
 		dprint(FD_STEADYSTATE, "intervals: %d, sum_y: %llu, mean: %f, max diff: %f, "
 					"objective: %f, limit: %f\n",
@@ -405,6 +435,17 @@ int td_steadystate_init(struct thread_data *td)
 	int intervals;
 
 	memset(ss, 0, sizeof(*ss));
+
+	/* Initialize per-metric trackers */
+	for (int i = 0; i < SS_METRIC_NR; i++) {
+		ss->trackers[i].sum_y = 0;
+		ss->trackers[i].sum_xy = 0;
+		ss->trackers[i].oldest_y = 0;
+		ss->trackers[i].slope = 0.0;
+		ss->trackers[i].deviation = 0.0;
+		ss->trackers[i].criterion = 0.0;
+		ss->trackers[i].attained = false;
+	}
 
 	if (o->ss_dur) {
 		steadystate_enabled = true;

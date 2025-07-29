@@ -50,6 +50,10 @@ struct steadystate_data {
 	uint64_t *bw_data;
 	uint64_t *lat_data;
 
+	/* Per-metric tracking */
+	struct ss_metric_tracker trackers[SS_METRIC_NR];
+
+	/* Legacy fields for backward compatibility - will be removed later */
 	double slope;
 	double deviation;
 	double criterion;
@@ -59,6 +63,7 @@ struct steadystate_data {
 	double slope_criterion;
 	bool check_both;	/* require both deviation and slope criteria */
 
+	/* Legacy shared statistics - will be removed later */
 	uint64_t sum_y;
 	uint64_t sum_x;
 	uint64_t sum_x_sq;
