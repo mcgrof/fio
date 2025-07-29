@@ -1361,92 +1361,190 @@ static int str_random_distribution_cb(void *data, const char *str)
 	return 0;
 }
 
-static bool is_valid_steadystate(unsigned int state)
+static bool is_valid_steadystate(unsigned int state, const char *opt_name)
 {
+	/* Check if it's a "both" mode option */
+	bool is_both = (strstr(opt_name, "_both") != NULL);
+
+	/* For "both" modes, we expect the base state (IOPS, BW, or LAT) */
+	if (is_both)
+		return (state == FIO_SS_IOPS || state == FIO_SS_BW || state == FIO_SS_LAT);
+
+	/* For regular modes, check the normal states */
 	return (state == FIO_SS_IOPS || state == FIO_SS_IOPS_SLOPE ||
 		state == FIO_SS_BW || state == FIO_SS_BW_SLOPE);
+}
+
+static int parse_steadystate_threshold(const char *thresh_str, struct thread_data *td,
+				      bool is_pct, bool is_lat, bool is_iops,
+				      double *out_val)
+{
+	double val;
+	long long ll;
+
+	if (is_pct) {
+		if (!str_to_float(thresh_str, &val, 0)) {
+			log_err("fio: could not parse steadystate threshold percentage\n");
+			return 1;
+		}
+		*out_val = val;
+	} else if (is_lat) {
+		long long tns;
+		if (check_str_time(thresh_str, &tns, 0)) {
+			log_err("fio: steadystate latency threshold parsing failed\n");
+			return 1;
+		}
+		*out_val = (double) tns;
+	} else if (is_iops) {
+		if (!str_to_float(thresh_str, &val, 0)) {
+			log_err("fio: steadystate IOPS threshold postfix parsing failed\n");
+			return 1;
+		}
+		*out_val = val;
+	} else { /* bandwidth */
+		if (str_to_decimal(thresh_str, &ll, 1, td, 0, 0)) {
+			log_err("fio: steadystate BW threshold postfix parsing failed\n");
+			return 1;
+		}
+		*out_val = (double) ll;
+	}
+	return 0;
 }
 
 static int str_steadystate_cb(void *data, const char *str)
 {
 	struct thread_data *td = cb_data_to_td(data);
-	double val;
 	char *nr;
 	char *pct;
-	long long ll;
+	char *comma;
+	char *opt_name;
+	bool is_pct = false;
+	bool is_both;
+	bool is_iops = td->o.ss_state & FIO_SS_IOPS;
+	bool is_lat = td->o.ss_state & FIO_SS_LAT;
 
-	if (!is_valid_steadystate(td->o.ss_state)) {
-		/* should be impossible to get here */
-		log_err("fio: unknown steady state criterion\n");
+	/* Extract option name from the original string */
+	opt_name = strdup(str);
+	if (!opt_name) {
+		log_err("fio: memory allocation failed\n");
 		return 1;
 	}
+
+	char *colon = strchr(opt_name, ':');
+	if (colon)
+		*colon = '\0';
+
+	if (!is_valid_steadystate(td->o.ss_state, opt_name)) {
+		/* should be impossible to get here */
+		log_err("fio: unknown steady state criterion\n");
+		free(opt_name);
+		return 1;
+	}
+
+	is_both = (strstr(opt_name, "_both") != NULL);
+	free(opt_name);
 
 	nr = get_opt_postfix(str);
 	if (!nr) {
 		log_err("fio: steadystate threshold must be specified in addition to criterion\n");
-		free(nr);
 		return 1;
 	}
 
-	/* ENHANCEMENT Allow fio to understand size=10.2% and use here */
+	/* Check if percentage mode is used */
 	pct = strstr(nr, "%");
 	if (pct) {
-		*pct = '\0';
-		strip_blank_end(nr);
-		if (!str_to_float(nr, &val, 0))	{
-			log_err("fio: could not parse steadystate threshold percentage\n");
-			free(nr);
-			return 1;
-		}
-
-		dprint(FD_PARSE, "set steady state threshold to %f%%\n", val);
-		free(nr);
-		if (parse_dryrun())
-			return 0;
-
+		is_pct = true;
 		td->o.ss_state |= FIO_SS_PCT;
-		td->o.ss_limit.u.f = val;
-	} else if (td->o.ss_state & FIO_SS_IOPS) {
-		if (!str_to_float(nr, &val, 0)) {
-			log_err("fio: steadystate IOPS threshold postfix parsing failed\n");
+	}
+
+	if (is_both) {
+		/* For "both" modes, we expect two thresholds separated by comma */
+		char *dev_thresh, *slope_thresh;
+		char *nr_copy = strdup(nr);
+		double dev_val, slope_val;
+
+		if (!nr_copy) {
+			log_err("fio: memory allocation failed\n");
 			free(nr);
 			return 1;
 		}
 
-		dprint(FD_PARSE, "set steady state IOPS threshold to %f\n", val);
+		comma = strchr(nr_copy, ',');
+		if (!comma) {
+			log_err("fio: steady state 'both' mode requires two thresholds separated by comma (e.g., iops_both:0.1%%,0.05%%)\n");
+			free(nr);
+			free(nr_copy);
+			return 1;
+		}
+
+		*comma = '\0';
+		dev_thresh = nr_copy;
+		slope_thresh = comma + 1;
+
+		/* Strip % signs if present */
+		if (is_pct) {
+			char *p = strchr(dev_thresh, '%');
+			if (p) *p = '\0';
+			p = strchr(slope_thresh, '%');
+			if (p) *p = '\0';
+		}
+
+		strip_blank_end(dev_thresh);
+		strip_blank_front(&slope_thresh);
+		strip_blank_end(slope_thresh);
+
+		/* Parse deviation threshold */
+		if (parse_steadystate_threshold(dev_thresh, td, is_pct, is_lat, is_iops, &dev_val)) {
+			free(nr);
+			free(nr_copy);
+			return 1;
+		}
+
+		/* Parse slope threshold */
+		if (parse_steadystate_threshold(slope_thresh, td, is_pct, is_lat, is_iops, &slope_val)) {
+			free(nr);
+			free(nr_copy);
+			return 1;
+		}
+
+		dprint(FD_PARSE, "set steady state both mode - deviation threshold: %f, slope threshold: %f\n",
+		       dev_val, slope_val);
+
 		free(nr);
+		free(nr_copy);
+
 		if (parse_dryrun())
 			return 0;
 
-		td->o.ss_limit.u.f = val;
-        } else if (td->o.ss_state & FIO_SS_LAT) {
-                long long tns;
-                if (check_str_time(nr, &tns, 0)) {
-                        log_err("fio: steadystate latency threshold parsing failed\n");
-                        free(nr);
-                        return 1;
-                }
+		/* Store both thresholds */
+		td->o.ss_limit.u.f = dev_val; /* Keep for compatibility */
+		td->ss.deviation_criterion = dev_val;
+		td->ss.slope_criterion = slope_val;
+		td->ss.check_both = true;
+	} else {
+		/* Single threshold mode */
+		double val;
+		char *thresh_str = nr;
 
-                dprint(FD_PARSE, "set steady state latency threshold to %lld nsec\n", tns);
-                free(nr);
-                if (parse_dryrun())
-                        return 0;
+		if (is_pct) {
+			char *p = strchr(thresh_str, '%');
+			if (p) *p = '\0';
+		}
+		strip_blank_end(thresh_str);
 
-                td->o.ss_limit.u.f = (double) tns;
-
-	} else {	/* bandwidth criterion */
-		if (str_to_decimal(nr, &ll, 1, td, 0, 0)) {
-			log_err("fio: steadystate BW threshold postfix parsing failed\n");
+		if (parse_steadystate_threshold(thresh_str, td, is_pct, is_lat, is_iops, &val)) {
 			free(nr);
 			return 1;
 		}
 
-		dprint(FD_PARSE, "set steady state BW threshold to %lld\n", ll);
+		dprint(FD_PARSE, "set steady state threshold to %f\n", val);
 		free(nr);
+
 		if (parse_dryrun())
 			return 0;
 
-		td->o.ss_limit.u.f = (double) ll;
+		td->o.ss_limit.u.f = val;
+		td->ss.check_both = false;
 	}
 
 	td->ss.state = td->o.ss_state;
@@ -5516,6 +5614,18 @@ struct fio_option fio_options[FIO_MAX_OPTS] = {
                           { .ival = "lat_slope",
                             .oval = FIO_SS_LAT_SLOPE,
                             .help = "slope calculated from latency measurements",
+                          },
+                          { .ival = "iops_both",
+                            .oval = FIO_SS_IOPS,
+                            .help = "require both deviation and slope criteria for IOPS (SNIA compliance)",
+                          },
+                          { .ival = "bw_both",
+                            .oval = FIO_SS_BW,
+                            .help = "require both deviation and slope criteria for bandwidth (SNIA compliance)",
+                          },
+                          { .ival = "lat_both",
+                            .oval = FIO_SS_LAT,
+                            .help = "require both deviation and slope criteria for latency (SNIA compliance)",
                           },
 		},
 		.category = FIO_OPT_C_GENERAL,

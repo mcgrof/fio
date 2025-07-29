@@ -323,10 +323,29 @@ int steadystate_check(void)
 		if (group_lat_samples)
 			group_lat = (uint64_t)(group_lat_sum / group_lat_samples);
 
-		if (ss->state & FIO_SS_SLOPE)
+		if (ss->check_both) {
+			/* SNIA compliance: check both deviation and slope */
+			bool dev_met = false, slope_met = false;
+			double orig_limit = ss->limit;
+
+			/* Check deviation with its own criterion */
+			ss->limit = ss->deviation_criterion;
+			dev_met = steadystate_deviation(group_iops, group_bw, group_lat, td);
+
+			/* Check slope with its own criterion */
+			ss->limit = ss->slope_criterion;
+			slope_met = steadystate_slope(group_iops, group_bw, group_lat, td);
+
+			/* Restore original limit */
+			ss->limit = orig_limit;
+
+			/* Both criteria must be met */
+			ret = dev_met && slope_met;
+		} else if (ss->state & FIO_SS_SLOPE) {
 			ret = steadystate_slope(group_iops, group_bw, group_lat, td);
-		else
+		} else {
 			ret = steadystate_deviation(group_iops, group_bw, group_lat, td);
+		}
 
 		if (ret) {
 			if (td->o.group_reporting) {

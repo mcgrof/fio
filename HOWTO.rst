@@ -4125,8 +4125,11 @@ Steady state
 	the threshold. When the criterion falls below the threshold for the
 	specified duration, the job will stop. For example, `iops_slope:0.1%` will
 	direct fio to terminate the job when the least squares regression slope
-	falls below 0.1% of the mean IOPS. If :option:`group_reporting` is enabled
-	this will apply to all jobs in the group. Below is the list of available
+	falls below 0.1% of the mean IOPS. For the "both" criteria modes
+	(iops_both, bw_both, lat_both), two comma-separated thresholds are required:
+	the first for deviation and the second for slope (e.g., `iops_both:0.1%,0.05%`).
+	If :option:`group_reporting` is enabled this will apply to all jobs in the
+	group. Below is the list of available
 	steady state assessment criteria. All assessments are carried out using only
 	data from the rolling collection window. Threshold limits can be expressed
 	as a fixed value or as a percentage of the mean in the collection window.
@@ -4165,6 +4168,30 @@ Steady state
 			regression slope. Stop the job if the slope falls below the
 			specified limit. The latency values are weighted by the number
 			of I/O samples in each measurement interval.
+
+		**iops_both**
+			Collect IOPS data and require both deviation and slope criteria
+			to be met for steady state. This mode accepts two comma-separated
+			thresholds: the first for deviation and the second for slope
+			(e.g., ``iops_both:0.1%,0.05%``). The job will only terminate
+			when BOTH criteria are met. This aligns with SNIA SSD Performance
+			Test Specification requirements.
+
+		**bw_both**
+			Collect bandwidth data and require both deviation and slope criteria
+			to be met for steady state. This mode accepts two comma-separated
+			thresholds: the first for deviation and the second for slope
+			(e.g., ``bw_both:100MB,50MB``). The job will only terminate
+			when BOTH criteria are met. This aligns with SNIA SSD Performance
+			Test Specification requirements.
+
+		**lat_both**
+			Collect latency data and require both deviation and slope criteria
+			to be met for steady state. This mode accepts two comma-separated
+			thresholds: the first for deviation and the second for slope
+			(e.g., ``lat_both:1ms,500us``). The job will only terminate
+			when BOTH criteria are met. This aligns with SNIA SSD Performance
+			Test Specification requirements. Uses mean latency values for the calculation.
 
 .. option:: steadystate_duration=time, ss_dur=time
 
