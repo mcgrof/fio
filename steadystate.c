@@ -99,6 +99,18 @@ static uint64_t *get_metric_data_array(struct steadystate_data *ss, enum ss_metr
 	}
 }
 
+/* Forward declarations */
+static void update_tracker_statistics(struct ss_metric_tracker *tracker,
+				     uint64_t *data_array,
+				     struct steadystate_data *ss,
+				     int intervals, bool first_time);
+static bool steadystate_slope_tracker(struct ss_metric_tracker *tracker,
+				      struct steadystate_data *ss,
+				      uint64_t new_val, int intervals);
+static bool steadystate_deviation_tracker(struct ss_metric_tracker *tracker,
+					 struct steadystate_data *ss,
+					 uint64_t *data_array, int intervals);
+
 /*
  * Helper function to check if multi-metric mode is active
  */
@@ -112,6 +124,75 @@ static bool is_multi_metric(struct steadystate_data *ss)
 	if (ss->active_metrics & FIO_SS_ACTIVE_LAT)
 		count++;
 	return count > 1;
+}
+
+/*
+ * Check steady state for multiple metrics simultaneously
+ */
+static bool check_multi_metric_steady_state(struct steadystate_data *ss,
+					    uint64_t group_iops,
+					    uint64_t group_bw,
+					    uint64_t group_lat,
+					    struct thread_data *td)
+{
+	int intervals = ss->dur / (ss_check_interval / 1000L);
+	bool all_attained = true;
+
+	/* Update all active metrics */
+	ss->bw_data[ss->tail] = group_bw;
+	ss->iops_data[ss->tail] = group_iops;
+	ss->lat_data[ss->tail] = group_lat;
+
+	if (!(ss->state & FIO_SS_BUFFER_FULL) && ss->tail - ss->head < intervals - 1) {
+		/* Buffer not full yet */
+		return false;
+	}
+
+	/* Check each active metric */
+	for (enum ss_metric_type type = 0; type < SS_METRIC_NR; type++) {
+		uint32_t metric_flag = 1 << type;
+		struct ss_metric_tracker *tracker;
+		uint64_t *data_array;
+		bool first_time;
+		bool metric_steady = false;
+
+		if (!(ss->active_metrics & metric_flag))
+			continue;
+
+		tracker = &ss->trackers[type];
+		data_array = get_metric_data_array(ss, type);
+		first_time = !(ss->state & FIO_SS_BUFFER_FULL);
+
+		/* Update tracker statistics */
+		update_tracker_statistics(tracker, data_array, ss, intervals, first_time);
+
+		if (first_time && type == SS_METRIC_NR - 1) {
+			/* Mark buffer as full after updating all metrics */
+			ss->state |= FIO_SS_BUFFER_FULL;
+		}
+
+		/* Check if this metric has reached steady state */
+		if (ss->state & FIO_SS_SLOPE) {
+			metric_steady = steadystate_slope_tracker(tracker, ss, data_array[ss->tail], intervals);
+		} else {
+			metric_steady = steadystate_deviation_tracker(tracker, ss, data_array, intervals);
+		}
+
+		tracker->attained = metric_steady;
+		if (!metric_steady)
+			all_attained = false;
+
+		dprint(FD_STEADYSTATE, "metric %d: %s (criterion: %f, limit: %f)\n",
+			type, metric_steady ? "steady" : "not steady",
+			tracker->criterion, ss->limit);
+	}
+
+	/* Update buffer indices */
+	ss->tail = ss_buffer_next(ss->tail, intervals);
+	if (ss->tail <= ss->head)
+		ss->head = ss_buffer_next(ss->head, intervals);
+
+	return all_attained;
 }
 
 void steadystate_free(struct thread_data *td)
@@ -497,7 +578,10 @@ int steadystate_check(void)
 			group_lat = (uint64_t)mean_lat;
 		}
 
-		if (ss->check_both) {
+		if (is_multi_metric(ss)) {
+			/* Multi-metric mode: all metrics must reach steady state */
+			ret = check_multi_metric_steady_state(ss, group_iops, group_bw, group_lat, td);
+		} else if (ss->check_both) {
 			/* SNIA compliance: check both deviation and slope */
 			bool dev_met = false, slope_met = false;
 			double orig_limit = ss->limit;
