@@ -10,7 +10,7 @@ LIB_DIR = lib
 BUILD_DIR = build
 
 # List of test programs
-TESTS = test_latency_precision
+TESTS = test_latency_precision test_multi_metric_steadystate
 
 # Build paths
 TEST_SRCS = $(addprefix $(TEST_DIR)/, $(addsuffix .c, $(TESTS)))
