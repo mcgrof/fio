@@ -43,6 +43,7 @@ struct steadystate_data {
 	unsigned long long ramp_time;
 
 	uint32_t state;
+	uint32_t active_metrics;	/* Bitmask of metrics to track simultaneously */
 
 	unsigned int head;
 	unsigned int tail;
@@ -87,6 +88,15 @@ enum {
 	__FIO_SS_PCT,
 	__FIO_SS_BUFFER_FULL,
 	__FIO_SS_LAT,
+};
+
+/*
+ * Bitmask values for active_metrics field
+ */
+enum {
+	FIO_SS_ACTIVE_IOPS = 1 << SS_METRIC_IOPS,
+	FIO_SS_ACTIVE_BW = 1 << SS_METRIC_BW,
+	FIO_SS_ACTIVE_LAT = 1 << SS_METRIC_LAT,
 };
 
 enum {

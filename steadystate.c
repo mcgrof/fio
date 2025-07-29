@@ -99,6 +99,21 @@ static uint64_t *get_metric_data_array(struct steadystate_data *ss, enum ss_metr
 	}
 }
 
+/*
+ * Helper function to check if multi-metric mode is active
+ */
+static bool is_multi_metric(struct steadystate_data *ss)
+{
+	int count = 0;
+	if (ss->active_metrics & FIO_SS_ACTIVE_IOPS)
+		count++;
+	if (ss->active_metrics & FIO_SS_ACTIVE_BW)
+		count++;
+	if (ss->active_metrics & FIO_SS_ACTIVE_LAT)
+		count++;
+	return count > 1;
+}
+
 void steadystate_free(struct thread_data *td)
 {
 	free(td->ss.iops_data);
@@ -555,6 +570,15 @@ int td_steadystate_init(struct thread_data *td)
 		ss->state = o->ss_state;
 		if (!td->ss.ramp_time)
 			ss->state |= FIO_SS_RAMP_OVER;
+
+		/* Initialize active_metrics based on state flags */
+		ss->active_metrics = 0;
+		if (ss->state & FIO_SS_IOPS)
+			ss->active_metrics |= FIO_SS_ACTIVE_IOPS;
+		if (ss->state & FIO_SS_BW)
+			ss->active_metrics |= FIO_SS_ACTIVE_BW;
+		if (ss->state & FIO_SS_LAT)
+			ss->active_metrics |= FIO_SS_ACTIVE_LAT;
 
 		intervals = ss->dur / (ss_check_interval / 1000L);
 		ss->sum_x = intervals * (intervals - 1) / 2;
