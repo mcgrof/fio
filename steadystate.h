@@ -14,6 +14,16 @@ extern uint64_t steadystate_lat_mean(struct thread_stat *);
 extern bool steadystate_enabled;
 extern unsigned int ss_check_interval;
 
+/*
+ * Metric types for steady state detection
+ */
+enum ss_metric_type {
+	SS_METRIC_IOPS = 0,
+	SS_METRIC_BW,
+	SS_METRIC_LAT,
+	SS_METRIC_NR	/* Number of metric types */
+};
+
 struct steadystate_data {
 	double limit;
 	unsigned long long dur;
