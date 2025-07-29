@@ -82,6 +82,23 @@ static struct ss_metric_tracker *get_active_tracker(struct steadystate_data *ss)
 	return &ss->trackers[type];
 }
 
+/*
+ * Helper function to get the data array for a metric type
+ */
+static uint64_t *get_metric_data_array(struct steadystate_data *ss, enum ss_metric_type type)
+{
+	switch (type) {
+	case SS_METRIC_IOPS:
+		return ss->iops_data;
+	case SS_METRIC_BW:
+		return ss->bw_data;
+	case SS_METRIC_LAT:
+		return ss->lat_data;
+	default:
+		return NULL;
+	}
+}
+
 void steadystate_free(struct thread_data *td)
 {
 	free(td->ss.iops_data);
@@ -139,6 +156,38 @@ void steadystate_setup(void)
 		steadystate_alloc(prev_td);
 }
 
+/*
+ * Helper function to calculate slope for a specific metric tracker
+ */
+static bool steadystate_slope_tracker(struct ss_metric_tracker *tracker,
+				      struct steadystate_data *ss,
+				      uint64_t new_val, int intervals)
+{
+	double result;
+
+	if (!(ss->state & FIO_SS_BUFFER_FULL)) {
+		/* Need full buffer for slope calculation */
+		return false;
+	}
+
+	/*
+	 * calculate slope as (sum_xy - sum_x * sum_y / n) / (sum_(x^2)
+	 * - (sum_x)^2 / n) This code assumes that all x values are
+	 * equally spaced when they are often off by a few milliseconds.
+	 * This assumption greatly simplifies the calculations.
+	 */
+	tracker->slope = (tracker->sum_xy - (double) ss->sum_x * tracker->sum_y / intervals) /
+			(ss->sum_x_sq - (double) ss->sum_x * ss->sum_x / intervals);
+
+	if (ss->state & FIO_SS_PCT)
+		tracker->criterion = 100.0 * tracker->slope / (tracker->sum_y / intervals);
+	else
+		tracker->criterion = tracker->slope;
+
+	result = tracker->criterion * (tracker->criterion < 0.0 ? -1.0 : 1.0);
+	return result < ss->limit;
+}
+
 static bool steadystate_slope(uint64_t iops, uint64_t bw, uint64_t lat,
 			      struct thread_data *td)
 {
@@ -179,32 +228,19 @@ static bool steadystate_slope(uint64_t iops, uint64_t bw, uint64_t lat,
 		ss->oldest_y = get_metric_value(ss, ss->head);
 		tracker->oldest_y = ss->oldest_y;
 
-		/*
-		 * calculate slope as (sum_xy - sum_x * sum_y / n) / (sum_(x^2)
-		 * - (sum_x)^2 / n) This code assumes that all x values are
-		 * equally spaced when they are often off by a few milliseconds.
-		 * This assumption greatly simplifies the calculations.
-		 */
-		ss->slope = (ss->sum_xy - (double) ss->sum_x * ss->sum_y / intervals) /
-				(ss->sum_x_sq - (double) ss->sum_x * ss->sum_x / intervals);
-		if (ss->state & FIO_SS_PCT)
-			ss->criterion = 100.0 * ss->slope / (ss->sum_y / intervals);
-		else
-			ss->criterion = ss->slope;
+		/* Use the new helper to calculate slope for the tracker */
+		if (steadystate_slope_tracker(tracker, ss, new_val, intervals)) {
+			/* Update legacy fields for compatibility */
+			ss->slope = tracker->slope;
+			ss->criterion = tracker->criterion;
 
-		/* Update tracker too */
-		tracker->slope = ss->slope;
-		tracker->criterion = ss->criterion;
-
-		dprint(FD_STEADYSTATE, "sum_y: %llu, sum_xy: %llu, slope: %f, "
-					"criterion: %f, limit: %f\n",
-					(unsigned long long) ss->sum_y,
-					(unsigned long long) ss->sum_xy,
-					ss->slope, ss->criterion, ss->limit);
-
-		result = ss->criterion * (ss->criterion < 0.0 ? -1.0 : 1.0);
-		if (result < ss->limit)
+			dprint(FD_STEADYSTATE, "sum_y: %llu, sum_xy: %llu, slope: %f, "
+						"criterion: %f, limit: %f\n",
+						(unsigned long long) tracker->sum_y,
+						(unsigned long long) tracker->sum_xy,
+						tracker->slope, tracker->criterion, ss->limit);
 			return true;
+		}
 	}
 
 	ss->tail = ss_buffer_next(ss->tail, intervals);
@@ -212,6 +248,38 @@ static bool steadystate_slope(uint64_t iops, uint64_t bw, uint64_t lat,
 		ss->head = ss_buffer_next(ss->head, intervals);
 
 	return false;
+}
+
+/*
+ * Helper function to calculate deviation for a specific metric tracker
+ */
+static bool steadystate_deviation_tracker(struct ss_metric_tracker *tracker,
+					 struct steadystate_data *ss,
+					 uint64_t *data_array, int intervals)
+{
+	int i;
+	double diff;
+	double mean;
+
+	if (!(ss->state & FIO_SS_BUFFER_FULL)) {
+		/* Need full buffer for deviation calculation */
+		return false;
+	}
+
+	mean = (double) tracker->sum_y / intervals;
+	tracker->deviation = 0.0;
+
+	for (i = 0; i < intervals; i++) {
+		diff = data_array[i] - mean;
+		tracker->deviation = max(tracker->deviation, diff * (diff < 0.0 ? -1.0 : 1.0));
+	}
+
+	if (ss->state & FIO_SS_PCT)
+		tracker->criterion = 100.0 * tracker->deviation / mean;
+	else
+		tracker->criterion = tracker->deviation;
+
+	return tracker->criterion < ss->limit;
 }
 
 static bool steadystate_deviation(uint64_t iops, uint64_t bw, uint64_t lat,
@@ -247,31 +315,23 @@ static bool steadystate_deviation(uint64_t iops, uint64_t bw, uint64_t lat,
 		ss->oldest_y = get_metric_value(ss, ss->head);
 		tracker->oldest_y = ss->oldest_y;
 
-		mean = (double) ss->sum_y / intervals;
-		ss->deviation = 0.0;
+		/* Use the new helper to calculate deviation for the tracker */
+		enum ss_metric_type type = get_active_metric_type(ss);
+		uint64_t *data_array = get_metric_data_array(ss, type);
 
-		for (i = 0; i < intervals; i++) {
-			diff = get_metric_value(ss, i) - mean;
-			ss->deviation = max(ss->deviation, diff * (diff < 0.0 ? -1.0 : 1.0));
-		}
+		if (steadystate_deviation_tracker(tracker, ss, data_array, intervals)) {
+			/* Update legacy fields for compatibility */
+			ss->deviation = tracker->deviation;
+			ss->criterion = tracker->criterion;
 
-		if (ss->state & FIO_SS_PCT)
-			ss->criterion = 100.0 * ss->deviation / mean;
-		else
-			ss->criterion = ss->deviation;
-
-		/* Update tracker too */
-		tracker->deviation = ss->deviation;
-		tracker->criterion = ss->criterion;
-
-		dprint(FD_STEADYSTATE, "intervals: %d, sum_y: %llu, mean: %f, max diff: %f, "
-					"objective: %f, limit: %f\n",
-					intervals,
-					(unsigned long long) ss->sum_y, mean,
-					ss->deviation, ss->criterion, ss->limit);
-
-		if (ss->criterion < ss->limit)
+			double mean = (double) tracker->sum_y / intervals;
+			dprint(FD_STEADYSTATE, "intervals: %d, sum_y: %llu, mean: %f, max diff: %f, "
+						"objective: %f, limit: %f\n",
+						intervals,
+						(unsigned long long) tracker->sum_y, mean,
+						tracker->deviation, tracker->criterion, ss->limit);
 			return true;
+		}
 	}
 
 	ss->tail = ss_buffer_next(ss->tail, intervals);
