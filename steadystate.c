@@ -63,7 +63,7 @@ void steadystate_setup(void)
 		steadystate_alloc(prev_td);
 }
 
-static bool steadystate_slope(uint64_t iops, uint64_t bw, double lat,
+static bool steadystate_slope(uint64_t iops, uint64_t bw, uint64_t lat,
 			      struct thread_data *td)
 {
 	int i, j;
@@ -74,14 +74,14 @@ static bool steadystate_slope(uint64_t iops, uint64_t bw, double lat,
 
 	ss->bw_data[ss->tail] = bw;
 	ss->iops_data[ss->tail] = iops;
-	ss->lat_data[ss->tail] = (uint64_t)lat;
+	ss->lat_data[ss->tail] = lat;
 
 	if (ss->state & FIO_SS_IOPS)
 		new_val = iops;
 	else if (ss->state & FIO_SS_BW)
 		new_val = bw;
 	else
-		new_val = (uint64_t)lat;
+		new_val = lat;
 
 	if (ss->state & FIO_SS_BUFFER_FULL || ss->tail - ss->head == intervals - 1) {
 		if (!(ss->state & FIO_SS_BUFFER_FULL)) {
@@ -146,7 +146,7 @@ static bool steadystate_slope(uint64_t iops, uint64_t bw, double lat,
 	return false;
 }
 
-static bool steadystate_deviation(uint64_t iops, uint64_t bw, double lat,
+static bool steadystate_deviation(uint64_t iops, uint64_t bw, uint64_t lat,
 				  struct thread_data *td)
 {
 	int i;
@@ -158,7 +158,7 @@ static bool steadystate_deviation(uint64_t iops, uint64_t bw, double lat,
 
 	ss->bw_data[ss->tail] = bw;
 	ss->iops_data[ss->tail] = iops;
-	ss->lat_data[ss->tail] = (uint64_t)lat;
+	ss->lat_data[ss->tail] = lat;
 
 	if (ss->state & FIO_SS_BUFFER_FULL || ss->tail - ss->head == intervals  - 1) {
 		if (!(ss->state & FIO_SS_BUFFER_FULL)) {
@@ -230,17 +230,17 @@ int steadystate_check(void)
 	unsigned long rate_time;
 	struct timespec now;
 	uint64_t group_bw = 0, group_iops = 0;
-	double group_lat_sum = 0.0;
+	uint64_t group_lat_sum = 0;
 	uint64_t group_lat_samples = 0;
 	uint64_t td_iops, td_bytes;
-	double group_lat;
+	uint64_t group_lat;
 	bool ret;
 
 	prev_groupid = -1;
 	for_each_td(td) {
 		const bool needs_lock = td_async_processing(td);
 		struct steadystate_data *ss = &td->ss;
-		double td_lat_sum = 0.0;
+		uint64_t td_lat_sum = 0;
 		uint64_t td_lat_samples = 0;
 
 		if (!ss->dur || td->runstate <= TD_SETTING_UP ||
@@ -254,7 +254,7 @@ int steadystate_check(void)
 		    (td->o.group_reporting && td->groupid != prev_groupid)) {
 			group_bw = 0;
 			group_iops = 0;
-			group_lat_sum = 0.0;
+			group_lat_sum = 0;
 			group_lat_samples = 0;
 			group_ramp_time_over = 0;
 		}
@@ -276,8 +276,8 @@ int steadystate_check(void)
 		for (ddir = 0; ddir < DDIR_RWDIR_CNT; ddir++) {
 			td_iops += td->io_blocks[ddir];
 			td_bytes += td->io_bytes[ddir];
-			td_lat_sum += td->ts.clat_stat[ddir].mean.u.f *
-				      td->ts.clat_stat[ddir].samples;
+			td_lat_sum += (uint64_t)(td->ts.clat_stat[ddir].mean.u.f *
+					       td->ts.clat_stat[ddir].samples);
 			td_lat_samples += td->ts.clat_stat[ddir].samples;
 		}
 
@@ -319,9 +319,9 @@ int steadystate_check(void)
 					(unsigned long long) group_bw,
 					ss->head, ss->tail);
 
-		group_lat = 0.0;
+		group_lat = 0;
 		if (group_lat_samples)
-			group_lat = group_lat_sum / group_lat_samples;
+			group_lat = (uint64_t)(group_lat_sum / group_lat_samples);
 
 		if (ss->state & FIO_SS_SLOPE)
 			ret = steadystate_slope(group_iops, group_bw, group_lat, td);

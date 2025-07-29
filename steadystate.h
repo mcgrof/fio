@@ -40,7 +40,7 @@ struct steadystate_data {
 	struct timespec prev_time;
 	uint64_t prev_iops;
 	uint64_t prev_bytes;
-	double prev_lat_sum;
+	uint64_t prev_lat_sum;
 	uint64_t prev_lat_samples;
 };
 
