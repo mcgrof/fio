@@ -1887,6 +1887,9 @@ int fio_handle_client(struct fio_client *client)
 
 			offset = le64_to_cpu(p->ts.ss_bw_data_offset);
 			p->ts.ss_bw_data = (uint64_t *)((char *)p + offset);
+
+			offset = le64_to_cpu(p->ts.ss_lat_data_offset);
+			p->ts.ss_lat_data = (uint64_t *)((char *)p + offset);
 		}
 
 		convert_ts(&p->ts, &p->ts);
