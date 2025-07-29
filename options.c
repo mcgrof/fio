@@ -1418,8 +1418,12 @@ static int str_steadystate_cb(void *data, const char *str)
 	char *pct;
 	char *comma;
 	char *opt_name;
+	char *colon;
+	char *plus;
 	bool is_pct = false;
 	bool is_both;
+	bool is_multi;
+	double val;
 	bool is_iops = td->o.ss_state & FIO_SS_IOPS;
 	bool is_lat = td->o.ss_state & FIO_SS_LAT;
 
@@ -1430,15 +1434,12 @@ static int str_steadystate_cb(void *data, const char *str)
 		return 1;
 	}
 
-	{
-		char *colon = strchr(opt_name, ':');
-		if (colon)
-			*colon = '\0';
-	}
+	colon = strchr(opt_name, ':');
+	if (colon)
+		*colon = '\0';
 
 	/* Check for multi-metric syntax (e.g., "iops+bw") */
-	{
-		char *plus = strchr(opt_name, '+');
+	plus = strchr(opt_name, '+');
 	if (plus) {
 		/* Parse all metrics in the multi-metric string */
 		char *metric = opt_name;
@@ -1487,7 +1488,7 @@ static int str_steadystate_cb(void *data, const char *str)
 	}
 
 	is_both = (strstr(opt_name, "_both") != NULL);
-	bool is_multi = plus != NULL;
+	is_multi = plus != NULL;
 	free(opt_name);
 
 	nr = get_opt_postfix(str);
@@ -1515,17 +1516,16 @@ static int str_steadystate_cb(void *data, const char *str)
 
 		/* For now, just use a single threshold for all metrics */
 		/* TODO: Support comma-separated thresholds for each metric */
-		char *thresh_str = nr;
 
 		if (is_pct) {
-			char *p = strchr(thresh_str, '%');
+			char *p = strchr(nr, '%');
 			if (p) *p = '\0';
 		}
-		strip_blank_end(thresh_str);
+		strip_blank_end(nr);
 
 		/* For multi-metric, we can't determine is_lat/is_iops from a single state */
 		/* Use default parsing */
-		if (parse_steadystate_threshold(thresh_str, td, is_pct, false, false, &val)) {
+		if (parse_steadystate_threshold(nr, td, is_pct, false, false, &val)) {
 			free(nr);
 			return 1;
 		}

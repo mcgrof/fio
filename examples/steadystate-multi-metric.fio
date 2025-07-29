@@ -1,0 +1,86 @@
+# Multi-Metric Steady State Examples
+# 
+# This file demonstrates the new multi-metric steady state functionality
+# which allows monitoring multiple performance metrics simultaneously.
+# 
+# For comprehensive SSD testing, this eliminates the need to run separate
+# tests for IOPS, bandwidth, and latency - instead, a single test can
+# monitor all metrics and only terminate when they're ALL stable.
+
+[global]
+# Basic settings for SSD testing
+ioengine=libaio
+direct=1
+bs=4k
+iodepth=32
+time_based=1
+runtime=300s
+
+# Example 1: Basic multi-metric (IOPS + Bandwidth)
+# Monitors both IOPS and bandwidth - job stops when BOTH are stable
+[basic-multi-metric]
+filename=/dev/nvme0n1  # Change to your device
+rw=randwrite
+steadystate=iops+bw:1%
+steadystate_duration=10s
+steadystate_ramp_time=30s
+stonewall
+
+# Example 2: Three-metric monitoring (IOPS + Bandwidth + Latency)
+# Perfect for comprehensive SSD characterization
+[comprehensive-test]
+filename=/dev/nvme0n1
+rw=randread
+steadystate=iops+bw+lat:1000us
+steadystate_duration=15s
+steadystate_ramp_time=30s
+stonewall
+
+# Example 3: Slope-based multi-metric
+# Uses slope calculation instead of deviation - good for trending analysis
+[slope-based-multi]
+filename=/dev/nvme0n1
+rw=randwrite
+steadystate=iops_slope+bw_slope:0.5%
+steadystate_duration=20s
+steadystate_ramp_time=60s
+stonewall
+
+# Example 4: SNIA compliance mode with multiple metrics
+# Requires BOTH deviation AND slope criteria for each metric
+# This is the most stringent test mode
+[snia-compliance-multi]
+filename=/dev/nvme0n1
+rw=randread
+steadystate=iops_both+bw_both:1%,0.5%
+steadystate_duration=30s
+steadystate_ramp_time=60s
+stonewall
+
+# Example 5: Mixed workload with latency focus
+# Useful for application performance testing
+[mixed-workload-latency]
+filename=/dev/nvme0n1
+rw=randrw
+rwmixread=70
+steadystate=iops+lat:500us
+steadystate_duration=15s
+steadystate_ramp_time=30s
+
+# Understanding the Output:
+#
+# Single-metric output:
+#   steadystate: attained=yes, mean_dev=0.8%
+#
+# Multi-metric output:
+#   steadystate: attained=yes, metrics: iops=25.4k bw=99.2MiB/s lat=125us
+#
+# The multi-metric output shows current values for ALL active metrics,
+# making it easy to see the performance characteristics when steady state
+# is reached.
+#
+# Tips for Success:
+# 1. Use longer ramp_time for faster SSDs (they stabilize slower)
+# 2. Adjust thresholds based on your precision needs (1% is typical)
+# 3. Longer steady_duration provides more confidence in stability
+# 4. For production testing, consider 5-10 minute ramp times
