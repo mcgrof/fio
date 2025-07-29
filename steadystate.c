@@ -6,6 +6,32 @@
 bool steadystate_enabled = false;
 unsigned int ss_check_interval = 1000;
 
+/*
+ * Helper function to get metric value based on state flags
+ */
+static uint64_t get_metric_value(struct steadystate_data *ss, int index)
+{
+	if (ss->state & FIO_SS_IOPS)
+		return ss->iops_data[index];
+	else if (ss->state & FIO_SS_BW)
+		return ss->bw_data[index];
+	else
+		return ss->lat_data[index];
+}
+
+/*
+ * Helper function to get current metric value based on state flags
+ */
+static uint64_t get_current_metric(struct steadystate_data *ss, uint64_t iops, uint64_t bw, uint64_t lat)
+{
+	if (ss->state & FIO_SS_IOPS)
+		return iops;
+	else if (ss->state & FIO_SS_BW)
+		return bw;
+	else
+		return lat;
+}
+
 void steadystate_free(struct thread_data *td)
 {
 	free(td->ss.iops_data);
@@ -76,30 +102,15 @@ static bool steadystate_slope(uint64_t iops, uint64_t bw, uint64_t lat,
 	ss->iops_data[ss->tail] = iops;
 	ss->lat_data[ss->tail] = lat;
 
-	if (ss->state & FIO_SS_IOPS)
-		new_val = iops;
-	else if (ss->state & FIO_SS_BW)
-		new_val = bw;
-	else
-		new_val = lat;
+	new_val = get_current_metric(ss, iops, bw, lat);
 
 	if (ss->state & FIO_SS_BUFFER_FULL || ss->tail - ss->head == intervals - 1) {
 		if (!(ss->state & FIO_SS_BUFFER_FULL)) {
 			/* first time through */
 			for (i = 0, ss->sum_y = 0; i < intervals; i++) {
-				if (ss->state & FIO_SS_IOPS)
-					ss->sum_y += ss->iops_data[i];
-				else if (ss->state & FIO_SS_BW)
-					ss->sum_y += ss->bw_data[i];
-				else
-					ss->sum_y += ss->lat_data[i];
+				ss->sum_y += get_metric_value(ss, i);
 				j = (ss->head + i) % intervals;
-				if (ss->state & FIO_SS_IOPS)
-					ss->sum_xy += i * ss->iops_data[j];
-				else if (ss->state & FIO_SS_BW)
-					ss->sum_xy += i * ss->bw_data[j];
-				else
-					ss->sum_xy += i * ss->lat_data[j];
+				ss->sum_xy += i * get_metric_value(ss, j);
 			}
 			ss->state |= FIO_SS_BUFFER_FULL;
 		} else {		/* easy to update the sums */
@@ -108,12 +119,7 @@ static bool steadystate_slope(uint64_t iops, uint64_t bw, uint64_t lat,
 			ss->sum_xy = ss->sum_xy - ss->sum_y + intervals * new_val;
 		}
 
-		if (ss->state & FIO_SS_IOPS)
-			ss->oldest_y = ss->iops_data[ss->head];
-		else if (ss->state & FIO_SS_BW)
-			ss->oldest_y = ss->bw_data[ss->head];
-		else
-			ss->oldest_y = ss->lat_data[ss->head];
+		ss->oldest_y = get_metric_value(ss, ss->head);
 
 		/*
 		 * calculate slope as (sum_xy - sum_x * sum_y / n) / (sum_(x^2)
@@ -164,41 +170,21 @@ static bool steadystate_deviation(uint64_t iops, uint64_t bw, uint64_t lat,
 		if (!(ss->state & FIO_SS_BUFFER_FULL)) {
 			/* first time through */
 			for (i = 0, ss->sum_y = 0; i < intervals; i++) {
-				if (ss->state & FIO_SS_IOPS)
-					ss->sum_y += ss->iops_data[i];
-				else if (ss->state & FIO_SS_BW)
-					ss->sum_y += ss->bw_data[i];
-				else
-					ss->sum_y += ss->lat_data[i];
+				ss->sum_y += get_metric_value(ss, i);
 			}
 			ss->state |= FIO_SS_BUFFER_FULL;
 		} else {		/* easy to update the sum */
 			ss->sum_y -= ss->oldest_y;
-			if (ss->state & FIO_SS_IOPS)
-				ss->sum_y += ss->iops_data[ss->tail];
-			else if (ss->state & FIO_SS_BW)
-				ss->sum_y += ss->bw_data[ss->tail];
-			else
-				ss->sum_y += ss->lat_data[ss->tail];
+			ss->sum_y += get_metric_value(ss, ss->tail);
 		}
 
-		if (ss->state & FIO_SS_IOPS)
-			ss->oldest_y = ss->iops_data[ss->head];
-		else if (ss->state & FIO_SS_BW)
-			ss->oldest_y = ss->bw_data[ss->head];
-		else
-			ss->oldest_y = ss->lat_data[ss->head];
+		ss->oldest_y = get_metric_value(ss, ss->head);
 
 		mean = (double) ss->sum_y / intervals;
 		ss->deviation = 0.0;
 
 		for (i = 0; i < intervals; i++) {
-			if (ss->state & FIO_SS_IOPS)
-				diff = ss->iops_data[i] - mean;
-			else if (ss->state & FIO_SS_BW)
-				diff = ss->bw_data[i] - mean;
-			else
-				diff = ss->lat_data[i] - mean;
+			diff = get_metric_value(ss, i) - mean;
 			ss->deviation = max(ss->deviation, diff * (diff < 0.0 ? -1.0 : 1.0));
 		}
 
