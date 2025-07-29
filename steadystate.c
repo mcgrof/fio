@@ -32,6 +32,22 @@ static uint64_t get_current_metric(struct steadystate_data *ss, uint64_t iops, u
 		return lat;
 }
 
+/*
+ * Helper function for circular buffer index calculation
+ */
+static inline int ss_buffer_index(struct steadystate_data *ss, int offset, int intervals)
+{
+	return (ss->head + offset) % intervals;
+}
+
+/*
+ * Helper function to increment circular buffer index
+ */
+static inline int ss_buffer_next(int index, int intervals)
+{
+	return (index + 1) % intervals;
+}
+
 void steadystate_free(struct thread_data *td)
 {
 	free(td->ss.iops_data);
@@ -109,7 +125,7 @@ static bool steadystate_slope(uint64_t iops, uint64_t bw, uint64_t lat,
 			/* first time through */
 			for (i = 0, ss->sum_y = 0; i < intervals; i++) {
 				ss->sum_y += get_metric_value(ss, i);
-				j = (ss->head + i) % intervals;
+				j = ss_buffer_index(ss, i, intervals);
 				ss->sum_xy += i * get_metric_value(ss, j);
 			}
 			ss->state |= FIO_SS_BUFFER_FULL;
@@ -145,9 +161,9 @@ static bool steadystate_slope(uint64_t iops, uint64_t bw, uint64_t lat,
 			return true;
 	}
 
-	ss->tail = (ss->tail + 1) % intervals;
+	ss->tail = ss_buffer_next(ss->tail, intervals);
 	if (ss->tail <= ss->head)
-		ss->head = (ss->head + 1) % intervals;
+		ss->head = ss_buffer_next(ss->head, intervals);
 
 	return false;
 }
@@ -203,9 +219,9 @@ static bool steadystate_deviation(uint64_t iops, uint64_t bw, uint64_t lat,
 			return true;
 	}
 
-	ss->tail = (ss->tail + 1) % intervals;
+	ss->tail = ss_buffer_next(ss->tail, intervals);
 	if (ss->tail == ss->head)
-		ss->head = (ss->head + 1) % intervals;
+		ss->head = ss_buffer_next(ss->head, intervals);
 
 	return false;
 }
