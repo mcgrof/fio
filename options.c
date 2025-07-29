@@ -1430,12 +1430,15 @@ static int str_steadystate_cb(void *data, const char *str)
 		return 1;
 	}
 
-	char *colon = strchr(opt_name, ':');
-	if (colon)
-		*colon = '\0';
+	{
+		char *colon = strchr(opt_name, ':');
+		if (colon)
+			*colon = '\0';
+	}
 
 	/* Check for multi-metric syntax (e.g., "iops+bw") */
-	char *plus = strchr(opt_name, '+');
+	{
+		char *plus = strchr(opt_name, '+');
 	if (plus) {
 		/* Parse all metrics in the multi-metric string */
 		char *metric = opt_name;
@@ -1512,7 +1515,6 @@ static int str_steadystate_cb(void *data, const char *str)
 
 		/* For now, just use a single threshold for all metrics */
 		/* TODO: Support comma-separated thresholds for each metric */
-		double val;
 		char *thresh_str = nr;
 
 		if (is_pct) {

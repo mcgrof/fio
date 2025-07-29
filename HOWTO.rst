@@ -4160,6 +4160,9 @@ Steady state
 		# SNIA compliance with multiple metrics (both deviation and slope)
 		steadystate=iops_both+bw_both:1%
 
+	When multi-metric mode is active, the output will show values for all active
+	metrics: ``steadystate: attained=yes, metrics: iops=12.3k bw=48.5MiB/s lat=125us``
+
 		**iops**
 			Collect IOPS data. Stop the job if all individual IOPS measurements
 			are within the specified limit of the mean IOPS (e.g., ``iops:2``

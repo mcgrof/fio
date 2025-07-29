@@ -935,31 +935,62 @@ static void show_block_infos(int nr_block_infos, uint32_t *block_infos,
 
 static void show_ss_normal(struct thread_stat *ts, struct buf_output *out)
 {
-	char *p1, *p1alt, *p2;
-	unsigned long long bw_mean, iops_mean;
+	char *p1, *p1alt, *p2, *p3 = NULL;
+	unsigned long long bw_mean, iops_mean, lat_mean;
 	const int i2p = is_power_of_2(ts->kb_base);
+	int active_count = 0;
 
 	if (!ts->ss_dur)
 		return;
 
 	bw_mean = steadystate_bw_mean(ts);
 	iops_mean = steadystate_iops_mean(ts);
+	lat_mean = steadystate_lat_mean(ts);
 
 	p1 = num2str(bw_mean / ts->kb_base, ts->sig_figs, ts->kb_base, i2p, ts->unit_base);
 	p1alt = num2str(bw_mean / ts->kb_base, ts->sig_figs, ts->kb_base, !i2p, ts->unit_base);
 	p2 = num2str(iops_mean, ts->sig_figs, 1, 0, N2S_NONE);
+	if (ts->ss_state & FIO_SS_LAT)
+		p3 = num2str(lat_mean, ts->sig_figs, 1, 0, N2S_NONE);
 
-	log_buf(out, "  steadystate  : attained=%s, bw=%s (%s), iops=%s, %s%s=%.3f%s\n",
-		ts->ss_state & FIO_SS_ATTAINED ? "yes" : "no",
-		p1, p1alt, p2,
-		ts->ss_state & FIO_SS_IOPS ? "iops" : "bw",
-		ts->ss_state & FIO_SS_SLOPE ? " slope": " mean dev",
-		ts->ss_criterion.u.f,
-		ts->ss_state & FIO_SS_PCT ? "%" : "");
+	/* Count active metrics for multi-metric display */
+	if (ts->ss_state & FIO_SS_IOPS) active_count++;
+	if (ts->ss_state & FIO_SS_BW) active_count++;
+	if (ts->ss_state & FIO_SS_LAT) active_count++;
+
+	if (active_count > 1) {
+		/* Multi-metric mode */
+		log_buf(out, "  steadystate  : attained=%s",
+			ts->ss_state & FIO_SS_ATTAINED ? "yes" : "no");
+
+		log_buf(out, ", metrics:");
+		if (ts->ss_state & FIO_SS_IOPS)
+			log_buf(out, " iops=%s", p2);
+		if (ts->ss_state & FIO_SS_BW)
+			log_buf(out, " bw=%s (%s)", p1, p1alt);
+		if (ts->ss_state & FIO_SS_LAT)
+			log_buf(out, " lat=%s", p3);
+
+		log_buf(out, ", %s=%.3f%s\n",
+			ts->ss_state & FIO_SS_SLOPE ? "slope": "mean dev",
+			ts->ss_criterion.u.f,
+			ts->ss_state & FIO_SS_PCT ? "%" : "");
+	} else {
+		/* Single metric mode (existing format for compatibility) */
+		log_buf(out, "  steadystate  : attained=%s, bw=%s (%s), iops=%s, %s%s=%.3f%s\n",
+			ts->ss_state & FIO_SS_ATTAINED ? "yes" : "no",
+			p1, p1alt, p2,
+			ts->ss_state & FIO_SS_IOPS ? "iops" : (ts->ss_state & FIO_SS_LAT ? "lat" : "bw"),
+			ts->ss_state & FIO_SS_SLOPE ? " slope": " mean dev",
+			ts->ss_criterion.u.f,
+			ts->ss_state & FIO_SS_PCT ? "%" : "");
+	}
 
 	free(p1);
 	free(p1alt);
 	free(p2);
+	if (p3)
+		free(p3);
 }
 
 static void show_agg_stats(struct disk_util_agg *agg, int terse,
@@ -1902,11 +1933,42 @@ static struct json_object *show_thread_status_json(struct thread_stat *ts,
 		char ss_buf[64];
 		int intervals = ts->ss_dur / (ss_check_interval / 1000L);
 
-		snprintf(ss_buf, sizeof(ss_buf), "%s%s:%f%s",
-			ts->ss_state & FIO_SS_IOPS ? "iops" : "bw",
-			ts->ss_state & FIO_SS_SLOPE ? "_slope" : "",
-			(float) ts->ss_limit.u.f,
-			ts->ss_state & FIO_SS_PCT ? "%" : "");
+		/* Check for multi-metric mode */
+		int active_count = 0;
+		if (ts->ss_state & FIO_SS_IOPS) active_count++;
+		if (ts->ss_state & FIO_SS_BW) active_count++;
+		if (ts->ss_state & FIO_SS_LAT) active_count++;
+
+		if (active_count > 1) {
+			/* Multi-metric mode */
+			char *p = ss_buf;
+			int first = 1;
+
+			if (ts->ss_state & FIO_SS_IOPS) {
+				p += snprintf(p, sizeof(ss_buf) - (p - ss_buf), "iops");
+				first = 0;
+			}
+			if (ts->ss_state & FIO_SS_BW) {
+				if (!first) p += snprintf(p, sizeof(ss_buf) - (p - ss_buf), "+");
+				p += snprintf(p, sizeof(ss_buf) - (p - ss_buf), "bw");
+				first = 0;
+			}
+			if (ts->ss_state & FIO_SS_LAT) {
+				if (!first) p += snprintf(p, sizeof(ss_buf) - (p - ss_buf), "+");
+				p += snprintf(p, sizeof(ss_buf) - (p - ss_buf), "lat");
+			}
+			snprintf(p, sizeof(ss_buf) - (p - ss_buf), "%s:%f%s",
+				ts->ss_state & FIO_SS_SLOPE ? "_slope" : "",
+				(float) ts->ss_limit.u.f,
+				ts->ss_state & FIO_SS_PCT ? "%" : "");
+		} else {
+			/* Single metric mode */
+			snprintf(ss_buf, sizeof(ss_buf), "%s%s:%f%s",
+				ts->ss_state & FIO_SS_IOPS ? "iops" : (ts->ss_state & FIO_SS_LAT ? "lat" : "bw"),
+				ts->ss_state & FIO_SS_SLOPE ? "_slope" : "",
+				(float) ts->ss_limit.u.f,
+				ts->ss_state & FIO_SS_PCT ? "%" : "");
+		}
 
 		tmp = json_create_object();
 		json_object_add_value_object(root, "steadystate", tmp);
@@ -1942,6 +2004,16 @@ static struct json_object *show_thread_status_json(struct thread_stat *ts,
 		}
 		json_object_add_value_int(data, "bw_mean", steadystate_bw_mean(ts));
 		json_object_add_value_int(data, "iops_mean", steadystate_iops_mean(ts));
+		if (ts->ss_state & FIO_SS_LAT) {
+			struct json_array *lat;
+			lat = json_create_array();
+			for (l = 0; l < intervals; l++) {
+				k = (j + l) % intervals;
+				json_array_add_value_int(lat, ts->ss_lat_data[k]);
+			}
+			json_object_add_value_int(data, "lat_mean", steadystate_lat_mean(ts));
+			json_object_add_value_array(data, "lat", lat);
+		}
 		json_object_add_value_array(data, "iops", iops);
 		json_object_add_value_array(data, "bw", bw);
 	}
