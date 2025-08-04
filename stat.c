@@ -936,26 +936,27 @@ static void show_block_infos(int nr_block_infos, uint32_t *block_infos,
 static void show_ss_normal(struct thread_stat *ts, struct buf_output *out)
 {
 	char *p1, *p1alt, *p2;
-	unsigned long long bw_mean, iops_mean;
+       unsigned long long bw_mean, iops_mean;
 	const int i2p = is_power_of_2(ts->kb_base);
 
 	if (!ts->ss_dur)
 		return;
 
-	bw_mean = steadystate_bw_mean(ts);
-	iops_mean = steadystate_iops_mean(ts);
+       bw_mean = steadystate_bw_mean(ts);
+       iops_mean = steadystate_iops_mean(ts);
 
 	p1 = num2str(bw_mean / ts->kb_base, ts->sig_figs, ts->kb_base, i2p, ts->unit_base);
 	p1alt = num2str(bw_mean / ts->kb_base, ts->sig_figs, ts->kb_base, !i2p, ts->unit_base);
-	p2 = num2str(iops_mean, ts->sig_figs, 1, 0, N2S_NONE);
+       p2 = num2str(iops_mean, ts->sig_figs, 1, 0, N2S_NONE);
 
-	log_buf(out, "  steadystate  : attained=%s, bw=%s (%s), iops=%s, %s%s=%.3f%s\n",
-		ts->ss_state & FIO_SS_ATTAINED ? "yes" : "no",
-		p1, p1alt, p2,
-		ts->ss_state & FIO_SS_IOPS ? "iops" : "bw",
-		ts->ss_state & FIO_SS_SLOPE ? " slope": " mean dev",
-		ts->ss_criterion.u.f,
-		ts->ss_state & FIO_SS_PCT ? "%" : "");
+       log_buf(out, "  steadystate  : attained=%s, bw=%s (%s), iops=%s, %s%s=%.3f%s\n",
+               ts->ss_state & FIO_SS_ATTAINED ? "yes" : "no",
+               p1, p1alt, p2,
+               (ts->ss_state & FIO_SS_IOPS) ? "iops" :
+               (ts->ss_state & FIO_SS_BW) ? "bw" : "lat",
+               ts->ss_state & FIO_SS_SLOPE ? " slope": " mean dev",
+               ts->ss_criterion.u.f,
+               ts->ss_state & FIO_SS_PCT ? "%" : "");
 
 	free(p1);
 	free(p1alt);
@@ -1896,9 +1897,9 @@ static struct json_object *show_thread_status_json(struct thread_stat *ts,
 	}
 
 	if (ts->ss_dur) {
-		struct json_object *data;
-		struct json_array *iops, *bw;
-		int j, k, l;
+               struct json_object *data;
+               struct json_array *iops, *bw, *lat;
+               int j, k, l;
 		char ss_buf[64];
 		int intervals = ts->ss_dur / (ss_check_interval / 1000L);
 
@@ -1922,8 +1923,9 @@ static struct json_object *show_thread_status_json(struct thread_stat *ts,
 
 		data = json_create_object();
 		json_object_add_value_object(tmp, "data", data);
-		bw = json_create_array();
-		iops = json_create_array();
+               bw = json_create_array();
+               iops = json_create_array();
+               lat = json_create_array();
 
 		/*
 		** if ss was attained or the buffer is not full,
@@ -1933,17 +1935,20 @@ static struct json_object *show_thread_status_json(struct thread_stat *ts,
 		*/
 		if ((ts->ss_state & FIO_SS_ATTAINED) || !(ts->ss_state & FIO_SS_BUFFER_FULL))
 			j = ts->ss_head;
-		else
-			j = ts->ss_head == 0 ? intervals - 1 : ts->ss_head - 1;
-		for (l = 0; l < intervals; l++) {
-			k = (j + l) % intervals;
-			json_array_add_value_int(bw, ts->ss_bw_data[k]);
-			json_array_add_value_int(iops, ts->ss_iops_data[k]);
-		}
-		json_object_add_value_int(data, "bw_mean", steadystate_bw_mean(ts));
-		json_object_add_value_int(data, "iops_mean", steadystate_iops_mean(ts));
-		json_object_add_value_array(data, "iops", iops);
-		json_object_add_value_array(data, "bw", bw);
+               else
+                       j = ts->ss_head == 0 ? intervals - 1 : ts->ss_head - 1;
+               for (l = 0; l < intervals; l++) {
+                       k = (j + l) % intervals;
+                       json_array_add_value_int(bw, ts->ss_bw_data[k]);
+                       json_array_add_value_int(iops, ts->ss_iops_data[k]);
+                       json_array_add_value_int(lat, ts->ss_lat_data[k]);
+               }
+               json_object_add_value_int(data, "bw_mean", steadystate_bw_mean(ts));
+               json_object_add_value_int(data, "iops_mean", steadystate_iops_mean(ts));
+               json_object_add_value_int(data, "lat_mean", steadystate_lat_mean(ts));
+               json_object_add_value_array(data, "iops", iops);
+               json_object_add_value_array(data, "bw", bw);
+               json_object_add_value_array(data, "lat", lat);
 	}
 
 	return root;
@@ -2591,8 +2596,9 @@ void __show_run_stats(void)
 			ts->ss_state = td->ss.state;
 			ts->ss_dur = td->ss.dur;
 			ts->ss_head = td->ss.head;
-			ts->ss_bw_data = td->ss.bw_data;
-			ts->ss_iops_data = td->ss.iops_data;
+                       ts->ss_bw_data = td->ss.bw_data;
+                       ts->ss_iops_data = td->ss.iops_data;
+                       ts->ss_lat_data = td->ss.lat_data;
 			ts->ss_limit.u.f = td->ss.limit;
 			ts->ss_slope.u.f = td->ss.slope;
 			ts->ss_deviation.u.f = td->ss.deviation;

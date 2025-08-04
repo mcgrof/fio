@@ -1074,11 +1074,12 @@ static void convert_ts(struct thread_stat *dst, struct thread_stat *src)
 	}
 
 	if (dst->ss_state & FIO_SS_DATA) {
-		for (i = 0; i < dst->ss_dur; i++ ) {
-			dst->ss_iops_data[i] = le64_to_cpu(src->ss_iops_data[i]);
-			dst->ss_bw_data[i] = le64_to_cpu(src->ss_bw_data[i]);
-		}
-	}
+               for (i = 0; i < dst->ss_dur; i++ ) {
+                       dst->ss_iops_data[i] = le64_to_cpu(src->ss_iops_data[i]);
+                       dst->ss_bw_data[i] = le64_to_cpu(src->ss_bw_data[i]);
+                       dst->ss_lat_data[i] = le64_to_cpu(src->ss_lat_data[i]);
+               }
+       }
 
 	dst->cachehit		= le64_to_cpu(src->cachehit);
 	dst->cachemiss		= le64_to_cpu(src->cachemiss);
@@ -1884,9 +1885,11 @@ int fio_handle_client(struct fio_client *client)
 			offset = le64_to_cpu(p->ts.ss_iops_data_offset);
 			p->ts.ss_iops_data = (uint64_t *)((char *)p + offset);
 
-			offset = le64_to_cpu(p->ts.ss_bw_data_offset);
-			p->ts.ss_bw_data = (uint64_t *)((char *)p + offset);
-		}
+                       offset = le64_to_cpu(p->ts.ss_bw_data_offset);
+                       p->ts.ss_bw_data = (uint64_t *)((char *)p + offset);
+                       offset = le64_to_cpu(p->ts.ss_lat_data_offset);
+                       p->ts.ss_lat_data = (uint64_t *)((char *)p + offset);
+               }
 
 		convert_ts(&p->ts, &p->ts);
 		convert_gs(&p->rs, &p->rs);
