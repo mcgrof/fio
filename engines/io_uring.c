@@ -1040,12 +1040,15 @@ static int fio_ioring_getevents(struct thread_data *td, unsigned int min,
 		r = fio_ioring_cqring_reap(td, max - events);
 		if (r) {
 			events += r;
-			if (events >= min)
-				return events;
-
 			if (actual_min != 0)
 				actual_min -= r;
 		}
+		/*
+		 * Check outside the reap branch: a min=0 poll with nothing
+		 * pending must return instead of spinning forever.
+		 */
+		if (events >= min)
+			return events;
 
 		if (!o->sqpoll_thread) {
 			r = io_uring_enter(ld, 0, actual_min, enter_flags);
