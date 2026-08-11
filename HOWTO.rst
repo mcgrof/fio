@@ -5384,9 +5384,10 @@ The file I/O action format::
 
     timestamp filename action offset length
 
-The `timestamp` is relative to the beginning of the run (ie starts at 0). The
-`filename`, `action`, `offset` and `length`  are identical to version 2, except
-that version 3 does not allow the `wait` action.
+The `timestamp` is expressed in microseconds and is relative to the beginning
+of the run (ie starts at 0). The `filename`, `action`, `offset` and `length`
+are identical to version 2, except that version 3 does not allow the `wait`
+action.
 
 
 I/O Replay - Merging Traces
