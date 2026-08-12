@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# fio_iolog_shard: split a device-level fio version 3 iolog into
+# per-object shards using an offset-join (extent-owner attribution).
+#
+# A device-level iolog (e.g. one recorded with fio_iolog_record) is a
+# single serial stream, and fio replays one iolog with one job, so one
+# thread. To replay it on more than one core, the stream has to be
+# split -- but an arbitrary split can break per-object ordering. The
+# offset-join gives a principled split: if the application's objects
+# live in disjoint device ranges (slots), the owner of a command is
+# the entry whose slot base is the greatest base <= the command's
+# offset. Commands for the same object stay in one shard, in order;
+# different objects, which were concurrent in the original workload,
+# land in different shards and can replay in parallel.
+#
+# The join is a deterministic interval join, not inference: the map is
+# the attribution authority. Slots may be reused over time (same
+# range, different object later); the map file can carry an optional
+# time window per entry to disambiguate, and a command joins an entry
+# only if its timestamp falls inside the window.
+#
+# A merged command can span the boundary between two owners; such a
+# command is split at the boundary so each owner is attributed exactly
+# its bytes. sync/datasync entries are barriers with no owner and are
+# replicated into every shard so each stream keeps its durability
+# ordering.
+#
+# Map file format, one entry per line (offsets/lengths in bytes,
+# timestamps in microseconds on the iolog's timeline):
+#
+#   <object> <base> <len> [<ts_start> <ts_end>]
+#
+# The offset-join mechanism comes from the kvio record/replay/
+# attribution pipeline (docs/kvio.html in
+# https://github.com/SamsungDS/ebpf-syscall), where it was validated at
+# 100% parity against a cookie-based (io_uring user_data) ground truth,
+# making attribution possible with zero cooperation from the I/O
+# engine. Commands matching no map entry go to an "unattributed" shard
+# so nothing is silently dropped.
+
+import argparse
+import sys
+from bisect import bisect_right
+
+IO_ACTS = ("read", "write", "trim", "sync", "datasync", "sync_file_range")
+SYNC_ACTS = ("sync", "datasync")
+V3_HDR = "fio version 3 iolog"
+
+
+class MapEntry:
+    __slots__ = ("obj", "base", "length", "ts_start", "ts_end")
+
+    def __init__(self, obj, base, length, ts_start=None, ts_end=None):
+        self.obj = obj
+        self.base = base
+        self.length = length
+        self.ts_start = ts_start
+        self.ts_end = ts_end
+
+    def contains(self, off, ts):
+        if not (self.base <= off < self.base + self.length):
+            return False
+        if self.ts_start is not None and not (self.ts_start <= ts <=
+                                              self.ts_end):
+            return False
+        return True
+
+
+def load_map(path):
+    """Load map entries, grouped by base, bases sorted for bisect."""
+    by_base = {}
+    with open(path) as f:
+        for ln, line in enumerate(f, 1):
+            fields = line.split()
+            if not fields or fields[0].startswith("#"):
+                continue
+            if len(fields) not in (3, 5):
+                sys.exit(f"{path}:{ln}: expected 'object base len "
+                         f"[ts_start ts_end]', got: {line.rstrip()}")
+            obj, base, length = fields[0], int(fields[1]), int(fields[2])
+            ts_s = ts_e = None
+            if len(fields) == 5:
+                ts_s, ts_e = int(fields[3]), int(fields[4])
+            by_base.setdefault(base, []).append(
+                MapEntry(obj, base, length, ts_s, ts_e))
+    if not by_base:
+        sys.exit(f"{path}: empty map")
+    bases = sorted(by_base)
+    return bases, by_base
+
+
+def owner_at(bases, by_base, off, ts):
+    """Greatest base <= off, then containment + time window."""
+    i = bisect_right(bases, off) - 1
+    if i < 0:
+        return None
+    for e in by_base[bases[i]]:
+        if e.contains(off, ts):
+            return e
+    return None
+
+
+def join_span(bases, by_base, off, length, ts):
+    """Attribute [off, off+length) across owners.
+
+    Returns a list of (object-or-None, offset, length) segments. A
+    command that spans an owner boundary is split so each owner gets
+    exactly its bytes; uncovered gaps yield None segments.
+    """
+    segs = []
+    end = off + length
+    while off < end:
+        e = owner_at(bases, by_base, off, ts)
+        if e:
+            seg_end = min(end, e.base + e.length)
+            segs.append((e.obj, off, seg_end - off))
+        else:
+            # Gap: runs to the next base above off, or to the end.
+            i = bisect_right(bases, off)
+            seg_end = min(end, bases[i]) if i < len(bases) else end
+            segs.append((None, off, seg_end - off))
+        off = seg_end
+    return segs
+
+
+def main():
+    p = argparse.ArgumentParser(
+        description="Split a device-level fio v3 iolog into per-object "
+                    "shards via an offset-join against a slot map.")
+    p.add_argument("iolog", help="input fio version 3 iolog")
+    p.add_argument("mapfile",
+                   help="slot map: '<object> <base> <len> "
+                        "[<ts_start> <ts_end>]' per line")
+    p.add_argument("-p", "--prefix", default=None,
+                   help="output prefix (default: the input path); shards "
+                        "are written as <prefix>.<object>.log")
+    args = p.parse_args()
+
+    prefix = args.prefix or args.iolog
+    bases, by_base = load_map(args.mapfile)
+
+    with open(args.iolog) as f:
+        lines = f.read().splitlines()
+    if not lines or lines[0].strip() != V3_HDR:
+        sys.exit(f"{args.iolog}: not a '{V3_HDR}' file (only v3 iologs "
+                 f"carry the timestamps the join needs)")
+
+    # The input iolog is time-ordered (fio writes it sequentially and
+    # fio_iolog_record sorts). Preserve that order: file management
+    # lines (add/open/close) are replicated into every shard in place,
+    # I/O lines go to the shard(s) the join picks. This keeps opens
+    # before a shard's first I/O and closes after its last.
+    shards = {}       # object -> list of lines
+    counts = {}
+    split_cmds = 0
+
+    def append_all(line):
+        for obj in shards:
+            shards[obj].append(line)
+
+    def emit(obj, line):
+        if obj not in shards:
+            # New shard: start it with the file lines seen so far, so
+            # it still has the add/open preamble.
+            shards[obj] = list(file_lines_seen)
+        shards[obj].append(line)
+        counts[obj] = counts.get(obj, 0) + 1
+
+    file_lines_seen = []
+    for line in lines[1:]:
+        fields = line.split()
+        if len(fields) == 3:
+            file_lines_seen.append(line)
+            append_all(line)
+            continue
+        if len(fields) != 5 or fields[2] not in IO_ACTS:
+            sys.exit(f"{args.iolog}: unrecognized line: {line}")
+        ts, fname, act = int(fields[0]), fields[1], fields[2]
+        off, length = int(fields[3]), int(fields[4])
+        if act in SYNC_ACTS:
+            # Barriers have no owner; every stream keeps its own.
+            append_all(line)
+            continue
+        segs = join_span(bases, by_base, off, length, ts)
+        if len(segs) > 1:
+            split_cmds += 1
+        for obj, seg_off, seg_len in segs:
+            obj = obj or "unattributed"
+            if len(segs) == 1:
+                emit(obj, line)
+            else:
+                emit(obj, f"{ts} {fname} {act} {seg_off} {seg_len}")
+
+    if not counts:
+        sys.exit(f"{args.iolog}: no I/O lines found")
+
+    for obj, shard_lines in shards.items():
+        out_path = f"{prefix}.{obj}.log"
+        with open(out_path, "w") as out:
+            out.write(V3_HDR + "\n")
+            out.write("\n".join(shard_lines) + "\n")
+        print(f"{out_path}: {counts.get(obj, 0)} entries", file=sys.stderr)
+
+    if split_cmds:
+        print(f"note: {split_cmds} commands spanned an owner boundary and "
+              f"were split", file=sys.stderr)
+    if "unattributed" in counts:
+        total = sum(counts.values())
+        print(f"warning: {counts['unattributed']}/{total} commands matched "
+              f"no map entry", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
