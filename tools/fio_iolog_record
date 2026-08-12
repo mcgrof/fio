@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# fio_iolog_record: record a block device's leaf request stream to a
+# fio version 3 iolog, using the block:block_rq_issue tracepoint via
+# bpftrace.
+#
+# blktrace records queue (Q) events, before the block layer merges and
+# splits requests, and fio's blktrace replay reissues those through the
+# block layer a second time -- so the device can end up seeing a
+# different command stream than the one originally recorded.
+# block_rq_issue fires when a request is handed to the driver, after
+# merging and splitting in that queue, so the log produced here is the
+# leaf block-request stream of the traced device. On a leaf NVMe
+# namespace that corresponds closely to the NVMe command stream; on a
+# stacked device (loop, device mapper, md) further transformation can
+# happen below the traced queue, so record on the lowest leaf device
+# you can observe.  Replay with:
+#
+#   fio --name=replay --filename=/dev/DEV --direct=1 \
+#       --ioengine=io_uring --iodepth=32 --read_iolog=out.log
+#
+# direct=1 keeps the page cache from transforming the stream again.
+# The block layer can still merge adjacent requests on replay, so for
+# strict fidelity claims re-record during the replay and compare.
+#
+# This tool is inspired by the kvio record/replay/attribution pipeline
+# (docs/kvio.html in https://github.com/SamsungDS/ebpf-syscall), which
+# demonstrated that an eBPF device-level capture converted to a fio v3
+# iolog can replay with exact command count and byte-exact size
+# distribution, where queue-level (blktrace) replay does not.
+#
+# Requires: bpftrace, root (or CAP_BPF + CAP_PERFMON).
+
+import argparse
+import os
+import signal
+import stat
+import subprocess
+import sys
+
+BPFTRACE_PROG = r"""
+tracepoint:block:block_rq_issue
+/args->dev == $1/
+{
+    printf("B %lld %s %lld %lld\n", nsecs, args->rwbs,
+           (int64)args->sector * 512, (int64)args->bytes);
+}
+"""
+
+
+def kernel_dev(path):
+    """Return the tracepoint's dev_t encoding (MAJOR << 20 | MINOR)."""
+    st = os.stat(path)
+    if not stat.S_ISBLK(st.st_mode):
+        sys.exit(f"{path}: not a block device")
+    return (os.major(st.st_rdev) << 20) | os.minor(st.st_rdev)
+
+
+def multipath_head(path):
+    """True if path is a native NVMe multipath head device.
+
+    A head's I/O is issued on hidden per-controller path devices
+    (nvmeXcYnZ) whose dev_t differs from the head's, so a
+    block_rq_issue filter on the head's dev_t captures nothing.
+    """
+    disk = os.path.basename(path)
+    dev = os.path.realpath(f"/sys/block/{disk}/device")
+    return os.path.basename(dev).startswith("nvme-subsys")
+
+
+def rwbs_action(rwbs, nbytes):
+    """Map a blktrace rwbs string to a fio iolog action, or None."""
+    for c in rwbs:
+        if c == 'W':
+            return "write"
+        if c == 'R':
+            return "read"
+        if c == 'D' or c == 'E':
+            return "trim"
+    # Flush-only requests ("FF") carry no data; replay them as a
+    # datasync so the device still sees a flush.
+    if 'F' in rwbs and nbytes == 0:
+        return "datasync"
+    return None
+
+
+def main():
+    p = argparse.ArgumentParser(
+        description="Record a block device's issued request stream to a "
+                    "fio version 3 iolog (via the block:block_rq_issue "
+                    "tracepoint).")
+    p.add_argument("device", help="block device to record, e.g. /dev/nvme0n1")
+    p.add_argument("-o", "--output", default="-",
+                   help="output iolog file (default: stdout)")
+    p.add_argument("-d", "--duration", type=int, default=0,
+                   help="stop after this many seconds (default: run until "
+                        "interrupted with ctrl-c)")
+    p.add_argument("-n", "--name", default=None,
+                   help="filename to put in the iolog (default: the device "
+                        "path; use this to record on one device and replay "
+                        "on another)")
+    args = p.parse_args()
+
+    dev = kernel_dev(args.device)
+    if multipath_head(args.device):
+        sys.exit(f"{args.device}: native NVMe multipath head; its I/O is "
+                 f"issued on hidden path devices (nvmeXcYnZ) that a dev_t "
+                 f"filter cannot match")
+    name = args.name or args.device
+
+    prog = BPFTRACE_PROG
+    if args.duration:
+        prog += "interval:s:%d { exit(); }\n" % args.duration
+
+    if os.geteuid() != 0:
+        print("warning: not running as root, bpftrace will likely fail",
+              file=sys.stderr)
+
+    try:
+        proc = subprocess.Popen(
+            ["bpftrace", "-e", prog, str(dev)],
+            stdout=subprocess.PIPE, text=True)
+    except FileNotFoundError:
+        sys.exit("bpftrace not found; install it to use this tool")
+
+    print(f"recording {args.device}, "
+          f"{'%ds' % args.duration if args.duration else 'ctrl-c to stop'} ..."
+          , file=sys.stderr)
+
+    # bpftrace's per-CPU output buffers do not guarantee global ordering,
+    # so collect everything and sort by timestamp before emitting.
+    rows = []
+    try:
+        for line in proc.stdout:
+            if not line.startswith("B "):
+                continue
+            try:
+                _, ts, rwbs, off, nbytes = line.split()
+                ts, off, nbytes = int(ts), int(off), int(nbytes)
+            except ValueError:
+                continue
+            act = rwbs_action(rwbs, nbytes)
+            if act is None:
+                continue
+            if act == "datasync":
+                # Flush requests carry no meaningful sector/length.
+                off = nbytes = 0
+            elif off < 0 or nbytes <= 0:
+                continue
+            rows.append((ts, act, off, nbytes))
+    except KeyboardInterrupt:
+        proc.send_signal(signal.SIGINT)
+    proc.wait()
+
+    if not rows:
+        sys.exit("no I/O captured")
+
+    rows.sort()
+    t0 = rows[0][0]
+
+    out = sys.stdout if args.output == "-" else open(args.output, "w")
+    # fio v3 iolog timestamps are microseconds relative to the start.
+    out.write("fio version 3 iolog\n")
+    out.write(f"0 {name} add\n")
+    out.write(f"0 {name} open\n")
+    for ts, act, off, nbytes in rows:
+        out.write(f"{(ts - t0) // 1000} {name} {act} {off} {nbytes}\n")
+    out.write(f"{(rows[-1][0] - t0) // 1000} {name} close\n")
+    if out is not sys.stdout:
+        out.close()
+        print(f"{len(rows)} entries -> {args.output}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
