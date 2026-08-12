@@ -5488,7 +5488,12 @@ global command order and relative timing. Replaying shards concurrently is
 ordered, but cross-object ordering, global flush ordering, hardware-queue
 assignment, and the exact interleaving at nearby timestamps are
 deliberately relaxed in exchange for scaling replay across cores along the
-boundaries where the original workload was itself concurrent.
+boundaries where the original workload was itself concurrent. Passing
+``-j <jobfile>`` writes a fio jobfile with one job per shard, so the
+sharded trace replays in parallel directly::
+
+    $ fio_iolog_shard -p shard -j replay.fio capture.log objects.map
+    $ fio replay.fio
 
 
 CPU idleness profiling
