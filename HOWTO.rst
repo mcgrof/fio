@@ -5495,6 +5495,11 @@ sharded trace replays in parallel directly::
     $ fio_iolog_shard -p shard -j replay.fio capture.log objects.map
     $ fio replay.fio
 
+A map with thousands of owners (e.g. one per file) should not become
+thousands of jobs; ``-n <N>`` hashes owners into a bounded number of worker
+shards, each owner mapping stably to one worker so per-object ordering is
+still preserved.
+
 
 CPU idleness profiling
 ----------------------

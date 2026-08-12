@@ -42,6 +42,7 @@
 
 import argparse
 import sys
+import zlib
 from bisect import bisect_right
 
 IO_ACTS = ("read", "write", "trim", "sync", "datasync", "sync_file_range")
@@ -136,6 +137,11 @@ def main():
     p.add_argument("-p", "--prefix", default=None,
                    help="output prefix (default: the input path); shards "
                         "are written as <prefix>.<object>.log")
+    p.add_argument("-n", "--num-shards", type=int, metavar="N",
+                   help="bound the number of shards: hash owners into N "
+                        "worker shards (w0..wN-1) instead of one shard per "
+                        "object; every owner maps stably to one worker, so "
+                        "per-object ordering is still preserved")
     p.add_argument("-j", "--jobfile", metavar="PATH",
                    help="also write a fio jobfile with one job per shard, "
                         "for object-sharded parallel replay of the trace")
@@ -171,7 +177,13 @@ def main():
         for obj in shards:
             shards[obj].append(line)
 
-    def emit(obj, line):
+    def shard_key(obj):
+        if args.num_shards and obj != "unattributed":
+            return "w%d" % (zlib.crc32(obj.encode()) % args.num_shards)
+        return obj
+
+    def emit(owner, line):
+        obj = shard_key(owner)
         if obj not in shards:
             # New shard: start it with the file lines seen so far, so
             # it still has the add/open preamble.
