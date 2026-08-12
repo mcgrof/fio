@@ -5429,6 +5429,68 @@ This runs trace A at 2x the speed twice for approximately the same runtime as
 a single run of trace B.
 
 
+I/O Replay - Device-level Recording and Sharding
+------------------------------------------------
+
+Replaying a blktrace capture faithfully reproduces the trace, but not
+necessarily what the device originally saw. blktrace records queue events,
+before the block layer merges and splits requests, and fio reissues those
+events through the block layer again on replay, where they are merged and
+split a second time under different timing and queue depths. The device-level
+command stream that results can differ substantially from the recorded run in
+command count and size distribution.
+
+The :file:`tools/fio_iolog_record` helper records at the other end of the
+block layer instead: it captures the `block:block_rq_issue` tracepoint (via
+bpftrace), which fires when requests are issued to the driver, after merging
+and splitting in that queue -- the leaf request stream of the traced device.
+On a leaf NVMe namespace this corresponds closely to the NVMe command stream;
+on stacked devices (loop, device mapper, md) further transformation can occur
+below the traced queue, so record on the lowest leaf device you can observe.
+The capture is written as a fio version 3 iolog, which fio replays natively::
+
+    $ fio_iolog_record -o capture.log /dev/nvme0n1
+
+    $ fio --name=replay --filename=/dev/nvme0n1 --direct=1 \
+          --ioengine=io_uring --iodepth=32 --read_iolog=capture.log
+
+Replaying with :option:`direct` =1 against the raw device keeps the page
+cache from transforming the stream again; the block layer can still merge
+adjacent requests on replay, so validate strict fidelity claims by
+re-recording during the replay and comparing. This approach also captures
+I/O that is invisible to syscall-level tracing (e.g. mmap-driven writeback),
+since the tracepoint fires regardless of how the I/O entered the kernel.
+
+Recording at the device level drops the connection to the application
+objects that caused the I/O. The :file:`tools/fio_iolog_shard` helper
+recovers it with an offset-join, a deterministic interval join taken from
+the kvio record/replay/attribution pipeline (see ``docs/kvio.html`` in
+https://github.com/SamsungDS/ebpf-syscall): given a map of objects to
+disjoint device ranges, each command is attributed to the object whose
+range base is the greatest base at or below the command's offset, with an
+optional per-entry time window to disambiguate ranges reused by different
+objects over time, and commands spanning an owner boundary split so each
+owner is attributed exactly its bytes. The map is the attribution
+authority: any set of disjoint extent owners works -- KV cache objects,
+preallocated or immutable files (via FIEMAP), SSTables, checkpoints, VM
+disks. For mutable filesystems note that extents can move and be reused,
+so a static extent snapshot is only authoritative for stable files; a
+time-versioned map is needed for the general case. Given the map, the
+tool splits one device-level iolog into one self-contained iolog per
+object::
+
+    $ fio_iolog_shard -p shard capture.log objects.map
+
+This enables two distinct replay modes. Replaying the unsharded capture
+with one job is *faithful single-stream replay*: it preserves the captured
+global command order and relative timing. Replaying shards concurrently is
+*object-sharded parallel replay*: each object's command stream stays
+ordered, but cross-object ordering, global flush ordering, hardware-queue
+assignment, and the exact interleaving at nearby timestamps are
+deliberately relaxed in exchange for scaling replay across cores along the
+boundaries where the original workload was itself concurrent.
+
+
 CPU idleness profiling
 ----------------------
 
