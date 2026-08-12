@@ -15,7 +15,9 @@
 # namespace that corresponds closely to the NVMe command stream; on a
 # stacked device (loop, device mapper, md) further transformation can
 # happen below the traced queue, so record on the lowest leaf device
-# you can observe.  Replay with:
+# you can observe. When NVMe-command identity is required, -t nvme
+# records nvme:nvme_setup_cmd, the commands the driver actually
+# builds, instead.  Replay with:
 #
 #   fio --name=replay --filename=/dev/DEV --direct=1 \
 #       --ioengine=io_uring --iodepth=32 --read_iolog=out.log
@@ -34,6 +36,7 @@
 
 import argparse
 import os
+import re
 import signal
 import stat
 import subprocess
@@ -47,6 +50,33 @@ tracepoint:block:block_rq_issue
            (int64)args->sector * 512, (int64)args->bytes);
 }
 """
+
+# nvme_setup_cmd fires as the driver builds the actual NVMe command,
+# below the block layer, so this records NVMe-command identity rather
+# than the leaf block request. qid 0 is the admin queue, whose opcodes
+# overlap I/O opcodes and must be excluded. SLBA is cdw10-11 (little
+# endian), the 0-based block count is the low 16 bits of cdw12.
+NVME_PROG = r"""
+tracepoint:nvme:nvme_setup_cmd
+/strncmp(args->disk, "@PREFIX@", @PLEN@) == 0 && args->qid > 0/
+{
+    $op = (uint64)args->opcode;
+    if ($op == 1 || $op == 2) {
+        $slba = (uint64)args->cdw10[0] | ((uint64)args->cdw10[1] << 8) |
+            ((uint64)args->cdw10[2] << 16) | ((uint64)args->cdw10[3] << 24) |
+            ((uint64)args->cdw10[4] << 32) | ((uint64)args->cdw10[5] << 40) |
+            ((uint64)args->cdw10[6] << 48) | ((uint64)args->cdw10[7] << 56);
+        $nlb = (uint64)args->cdw10[8] | ((uint64)args->cdw10[9] << 8);
+        printf("N %lld %lld %lld %lld %s\n", nsecs, $op, $slba, $nlb + 1,
+               args->disk);
+    }
+    if ($op == 0) {
+        printf("N %lld 0 0 0 %s\n", nsecs, args->disk);
+    }
+}
+"""
+
+NVME_ACTS = {0: "datasync", 1: "write", 2: "read"}
 
 
 def kernel_dev(path):
@@ -100,27 +130,58 @@ def main():
                    help="filename to put in the iolog (default: the device "
                         "path; use this to record on one device and replay "
                         "on another)")
+    p.add_argument("-t", "--tracepoint", choices=("block", "nvme"),
+                   default="block",
+                   help="'block' records block:block_rq_issue, the leaf "
+                        "block-request stream (default, any block device); "
+                        "'nvme' records nvme:nvme_setup_cmd, the NVMe "
+                        "commands the driver builds (NVMe namespaces only; "
+                        "DSM/trim commands carry their ranges in the "
+                        "payload and are not recorded)")
     args = p.parse_args()
 
-    dev = kernel_dev(args.device)
-    if multipath_head(args.device):
-        sys.exit(f"{args.device}: native NVMe multipath head; its I/O is "
-                 f"issued on hidden path devices (nvmeXcYnZ) that a dev_t "
-                 f"filter cannot match")
     name = args.name or args.device
 
-    prog = BPFTRACE_PROG
+    if args.tracepoint == "nvme":
+        kernel_dev(args.device)
+        disk = os.path.basename(args.device)
+        m = re.match(r"nvme(\d+)n(\d+)$", disk)
+        if m is None:
+            sys.exit(f"{args.device}: -t nvme needs a whole NVMe "
+                     f"namespace (e.g. /dev/nvme0n1)")
+        lbs_path = f"/sys/block/{disk}/queue/logical_block_size"
+        try:
+            lbs = int(open(lbs_path).read())
+        except OSError:
+            sys.exit(f"{lbs_path}: unreadable; -t nvme needs a whole "
+                     f"NVMe namespace (e.g. /dev/nvme0n1)")
+        # On native NVMe multipath the tracepoint reports the hidden
+        # per-controller path device (nvmeXcYnZ), not the head
+        # (nvmeXnY), so accept both. bpftrace has no regex: filter on
+        # the nvmeX prefix in the kernel, finish the match here.
+        path_re = re.compile(r"nvme%s(c\d+)?n%s$" % m.groups())
+        prefix = "nvme" + m.group(1)
+        prog = (NVME_PROG.replace("@PREFIX@", prefix)
+                         .replace("@PLEN@", str(len(prefix))))
+        cmd, tag = ["bpftrace", "-e", prog], "N"
+    else:
+        if multipath_head(args.device):
+            sys.exit(f"{args.device}: native NVMe multipath head; its I/O "
+                     f"is issued on hidden path devices (nvmeXcYnZ) that a "
+                     f"dev_t filter cannot match; use -t nvme")
+        prog = BPFTRACE_PROG
+        cmd, tag = ["bpftrace", "-e", prog, str(kernel_dev(args.device))], "B"
+
     if args.duration:
         prog += "interval:s:%d { exit(); }\n" % args.duration
+        cmd[2] = prog
 
     if os.geteuid() != 0:
         print("warning: not running as root, bpftrace will likely fail",
               file=sys.stderr)
 
     try:
-        proc = subprocess.Popen(
-            ["bpftrace", "-e", prog, str(dev)],
-            stdout=subprocess.PIPE, text=True)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
     except FileNotFoundError:
         sys.exit("bpftrace not found; install it to use this tool")
 
@@ -133,14 +194,22 @@ def main():
     rows = []
     try:
         for line in proc.stdout:
-            if not line.startswith("B "):
+            if not line.startswith(tag + " "):
                 continue
+            fields = line.split()
             try:
-                _, ts, rwbs, off, nbytes = line.split()
-                ts, off, nbytes = int(ts), int(off), int(nbytes)
-            except ValueError:
+                ts, kind = int(fields[1]), fields[2]
+                off, nbytes = int(fields[3]), int(fields[4])
+            except (IndexError, ValueError):
                 continue
-            act = rwbs_action(rwbs, nbytes)
+            if tag == "N":
+                if len(fields) < 6 or not path_re.match(fields[5]):
+                    continue
+                act = NVME_ACTS[int(kind)]
+                off *= lbs
+                nbytes *= lbs
+            else:
+                act = rwbs_action(kind, nbytes)
             if act is None:
                 continue
             if act == "datasync":

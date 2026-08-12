@@ -5447,7 +5447,10 @@ and splitting in that queue -- the leaf request stream of the traced device.
 On a leaf NVMe namespace this corresponds closely to the NVMe command stream;
 on stacked devices (loop, device mapper, md) further transformation can occur
 below the traced queue, so record on the lowest leaf device you can observe.
-The capture is written as a fio version 3 iolog, which fio replays natively::
+When NVMe-command identity is required, ``-t nvme`` records the
+`nvme:nvme_setup_cmd` tracepoint instead -- the commands the driver actually
+builds, below the block layer. The capture is written as a fio version 3
+iolog, which fio replays natively::
 
     $ fio_iolog_record -o capture.log /dev/nvme0n1
 
